@@ -1437,26 +1437,22 @@ const PDF = {
        * Accepte notamment :
        * RN25, ELE151, IC18, FO12, PYL100, 2ND16 et HB.
        */
-      const codeGroups = groupItems(
-        page.items.filter(item => item.x < page.width * 0.22)
-      );
-
       const anchors = [];
 
-      for (const group of codeGroups) {
-        const text = textByX(group.items);
-
-        const match = text.match(
-          /^\s*((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)(?=\s|[-–—:;]|$)/i
+      // Un code doit occuper un fragment autonome, pas commencer un titre.
+      for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
+        const match = item.str.match(
+          /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
         );
 
         if (!match) continue;
 
         const code = Utils.normalizeCode(match[1]);
+        if (/^ENTRE\d/.test(code)) continue;
 
         if (anchors.some(anchor =>
           anchor.code === code &&
-          Math.abs(anchor.y - group.y) <= 1
+          Math.abs(anchor.y - item.y) <= 1
         )) {
           continue;
         }
@@ -1464,7 +1460,7 @@ const PDF = {
         anchors.push({
           code,
           codeLabel: match[1],
-          y: group.y
+          y: item.y
         });
       }
 
@@ -1508,7 +1504,9 @@ const PDF = {
               item => Math.abs(item.y - y) <= tolerance
             );
 
-            const reading = readAmounts(items);
+            const reading = readAmounts(
+              items.filter(item => item.x >= page.width * 0.58)
+            );
             if (!reading) continue;
 
             readings.push({
@@ -1543,7 +1541,14 @@ const PDF = {
         const pu = valid ? reading.pu : NaN;
         const quantity = valid ? reading.quantity : NaN;
         const total = valid ? reading.total : NaN;
-        const unit = valid ? reading.unit : "";
+        const nearbyUnits = band.filter(item =>
+          item.x >= page.width * 0.58 &&
+          centerX(item) < page.width * 0.74 &&
+          Math.abs(item.y - anchor.y) <= 3
+        ).map(item => Utils.canonicalUnit(item.str)).filter(Boolean);
+        const fallbackUnits = [...new Set(nearbyUnits)];
+        const unit = (valid ? reading.unit : "") ||
+          (fallbackUnits.length === 1 ? fallbackUnits[0] : "");
 
         const designation = groupItems(
           band.filter(item =>
@@ -1581,7 +1586,9 @@ const PDF = {
           quantity,
           total,
           designation,
-          priceKind: "amount",
+          priceKind: ["MOE01", "MOE02"].includes(anchor.code)
+            ? "tiered_amount"
+            : "amount",
           puText: valid ? reading.puText : "",
           page: pageNumber,
           y: anchor.y,
@@ -1662,10 +1669,21 @@ const Compare = {
       koUnit: 0,
       koPrice: 0,
       hb: 0,
+      aVerifier: 0,
       total: pdfRows.length
     };
 
     for (const row of pdfRows) {
+      if (row.priceKind === "tiered_amount") {
+        output.push({
+          ...row,
+          status: "A_VERIFIER",
+          detail: "Montant par palier — à vérifier, non comparé au tarif catalogue"
+        });
+        stats.aVerifier++;
+        continue;
+      }
+
       if (row.priceKind === "percentage") {
         output.push({
           ...row,
@@ -1773,7 +1791,7 @@ const Compare = {
     const body = rows.map(row => {
       const cssClass = row.status === "OK"
         ? "ok"
-        : ["KO_PRIX", "HB_A_VERIFIER"].includes(row.status)
+        : ["KO_PRIX", "HB_A_VERIFIER", "A_VERIFIER"].includes(row.status)
           ? "warn"
           : "ko";
 
@@ -2211,6 +2229,7 @@ const Actions = {
         koUnit: 0,
         koPrice: 0,
         hb: 0,
+        aVerifier: 0,
         total: 0
       };
 
@@ -2253,7 +2272,8 @@ const Actions = {
         <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
         <span class="ko">KO unité : ${aggregate.koUnit}</span> |
         <span class="warn">KO prix : ${aggregate.koPrice}</span> |
-        <span class="warn">HB à vérifier : ${aggregate.hb}</span>
+        <span class="warn">HB à vérifier : ${aggregate.hb}</span> |
+        <span class="warn">À vérifier : ${aggregate.aVerifier}</span>
       `);
 
       Toast.success("Analyse terminée.");
