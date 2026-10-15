@@ -1299,7 +1299,7 @@ const PDF = {
     const diagnostics = [];
     const pages = new Map();
 
-    const centerX = (item) => item.x + item.width / 2;
+    const centerX = (item) => Number(item.x) + (Number(item.width) || 0) / 2;
 
     const textByX = (items) => [...items]
       .sort((a, b) => a.x - b.x)
@@ -1336,7 +1336,7 @@ const PDF = {
      * Exemple : 357,69 € 1,00 357,69 €
      */
     const numberPattern =
-      "[+-]?(?:\\d{1,3}(?: \\d{3})+|\\d+)(?:[.,]\\d+)?";
+      "[+-]?(?:\\d{1,3}(?:[\\s\\u00a0\\u202f]\\d{3})+|\\d+)(?:[.,]\\d+)?";
 
     const amountsPattern = new RegExp(
       "(" + numberPattern + ")\\s*(?:€|EUR)\\s*" +
@@ -1586,7 +1586,7 @@ const PDF = {
           quantity,
           total,
           designation,
-          priceKind: ["MOE01", "MOE02"].includes(anchor.code)
+          priceKind: /^MOE0[12]$/.test(anchor.code)
             ? "tiered_amount"
             : "amount",
           puText: valid ? reading.puText : "",
@@ -1668,8 +1668,8 @@ const Compare = {
       koAbsent: 0,
       koUnit: 0,
       koPrice: 0,
+	  aVerifier: 0,
       hb: 0,
-      aVerifier: 0,
       total: pdfRows.length
     };
 
@@ -1678,7 +1678,10 @@ const Compare = {
         output.push({
           ...row,
           status: "A_VERIFIER",
-          detail: "Montant par palier — à vérifier, non comparé au tarif catalogue"
+          detail:
+		  "Montant de maîtrise d'œuvre calculé par tranches : " +
+          "ne pas comparer directement ce montant au tarif catalogue. " +
+          "Assiette, tranches et taux à contrôler."
         });
         stats.aVerifier++;
         continue;
@@ -2228,8 +2231,8 @@ const Actions = {
         koAbsent: 0,
         koUnit: 0,
         koPrice: 0,
+		aVerifier: 0,
         hb: 0,
-        aVerifier: 0,
         total: 0
       };
 
@@ -2266,15 +2269,15 @@ const Actions = {
       UI.setLoading("exportCsvBtn", allRows.length === 0);
 
       UI.html("summary", `
-        Fournisseur : <b>${Utils.escapeHtml(supplier)}</b><br>
-        Lignes analysées : <b>${aggregate.total}</b><br>
-        <span class="ok">OK : ${aggregate.ok}</span> |
-        <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
-        <span class="ko">KO unité : ${aggregate.koUnit}</span> |
-        <span class="warn">KO prix : ${aggregate.koPrice}</span> |
-        <span class="warn">HB à vérifier : ${aggregate.hb}</span> |
-        <span class="warn">À vérifier : ${aggregate.aVerifier}</span>
-      `);
+         Fournisseur : <b>${Utils.escapeHtml(supplier)}</b><br>
+         Lignes analysées : <b>${aggregate.total}</b><br>
+         <span class="ok">OK : ${aggregate.ok}</span> |
+         <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
+         <span class="ko">KO unité : ${aggregate.koUnit}</span> |
+         <span class="warn">KO prix : ${aggregate.koPrice}</span> |
+        <span class="warn">À vérifier : ${aggregate.aVerifier}</span> |
+         <span class="warn">HB à vérifier : ${aggregate.hb}</span>
+       `);
 
       Toast.success("Analyse terminée.");
     } catch (error) {
