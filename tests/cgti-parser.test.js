@@ -174,6 +174,19 @@ test("unité et PU dans un même fragment : préfixe d'unité complet uniquement
   assert.deepEqual(values(parser().parse(lines(items))[0]), ["U", 357.69, 1, 357.69]);
 });
 
+test("unité isolée avant le PU même à gauche du milieu de page", () => {
+  const items = prestation();
+  items.find(item => item.x === 350).x = 310;
+  items.find(item => item.x === 410).x = 370;
+  assert.deepEqual(values(parser().parse(lines(items))[0]), ["U", 357.69, 1, 357.69]);
+});
+
+test("EUR collé au montant et symboles dans les fragments numériques", () => {
+  const items = prestation({ pu: "357,69EUR", total: "357,69€" })
+    .filter(item => item.x !== 460 && item.x !== 610);
+  assert.deepEqual(values(parser().parse(lines(items))[0]), ["U", 357.69, 1, 357.69]);
+});
+
 test("signe moins isolé et milliers découpés dans une cellule", () => {
   const items = prestation({ pu: "", total: "-1234,56" }).filter(item => item.x !== 410);
   items.push(fragment("−", 410), fragment("1", 416), fragment("234", 422),
@@ -220,6 +233,14 @@ test("lectures chiffrées incompatibles : préserver seulement les cellules en a
 test("deux unités reconnues différentes : diagnostic plutôt que choix arbitraire", () => {
   const items = prestation();
   items.push(fragment("ML", 350, 404));
+  const { parse, messages } = parser();
+  assert.deepEqual(values(parse(lines(items))[0]), ["", 357.69, 1, 357.69]);
+  assert.match(messages.table[0][0][0].erreur, /ambiguës.*unité/);
+});
+
+test("deux unités dans la même colonne explicite ne sont pas départagées par proximité", () => {
+  const items = [...header(), ...prestation()];
+  items.push(fragment("ML", 365));
   const { parse, messages } = parser();
   assert.deepEqual(values(parse(lines(items))[0]), ["", 357.69, 1, 357.69]);
   assert.match(messages.table[0][0][0].erreur, /ambiguës.*unité/);
@@ -280,6 +301,13 @@ test("colonnes explicitement reconnues : lecture sans devises et cellules indép
   assert.deepEqual(values(row), ["U", 1, NaN, 0]);
   assert.equal(row.designation, "Fourniture et pose");
   assert.equal(messages.warn.length, 1);
+});
+
+test("en-tête et devises séparées proches des frontières de colonnes", () => {
+  const { parse, messages } = parser();
+  const [row] = parse(lines([...header(), ...prestation()]));
+  assert.deepEqual(values(row), ["U", 357.69, 1, 357.69]);
+  assert.equal(messages.warn.length, 0);
 });
 
 test("pas d'unité piochée dans la description", () => {

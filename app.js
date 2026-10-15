@@ -1410,7 +1410,7 @@ const PDF = {
         if (field === "unit") {
           reading.unit = Utils.canonicalUnit(text);
         } else {
-          const value = clean(text).replace(/\s*(?:€|EUR)$/i, "");
+          const value = clean(text).replace(/^(?:€|EUR)\s*|\s*(?:€|EUR)$/gi, "");
           reading[field] = readNumber(value);
           if (field === "pu" && Number.isFinite(reading.pu)) reading.puText = value;
         }
@@ -1440,7 +1440,7 @@ const PDF = {
       const parts = [];
       for (const cell of cells) {
         // Garder les frontières géométriques, même si € / EUR est isolé.
-        for (const text of cell.text.split(/(€|\bEUR\b)/i).filter(text => text.trim())) {
+        for (const text of cell.text.split(/(€|(?<![A-Z])EUR\b)/i).filter(text => text.trim())) {
           parts.push({ ...cell, text: text.trim(), currency: /^(€|EUR)$/i.test(text.trim()) });
         }
       }
@@ -1681,12 +1681,15 @@ const PDF = {
         for (const y of baselines) {
           for (const tolerance of [0.8, 1.5, 2.5]) {
             const items = band.filter(item => Math.abs(item.y - y) <= tolerance);
-            const cell = cellsByX(items).filter(value => layout
+            const cells = cellsByX(items).filter(value => layout
               ? value.x >= layout.bounds.unit.left && value.right <= layout.bounds.unit.right
-              : value.x >= page.width * 0.5 && value.right <= puLeft &&
-                puLeft - value.right <= page.width * 0.12).pop();
-            const unit = cell ? Utils.canonicalUnit(cell.text) : "";
-            if (unit) units.push({ ...cell, unit });
+              : value.x >= page.width * 0.22 && value.right <= puLeft &&
+                puLeft - value.right <= page.width * 0.12);
+            for (const cell of cells.reverse()) {
+              const unit = Utils.canonicalUnit(cell.text);
+              if (!unit) break;
+              units.push({ ...cell, unit });
+            }
           }
         }
         // Ne pas opposer « m » à « m² » si la première lecture n'a vu
