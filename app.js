@@ -1293,7 +1293,7 @@ const PDF = {
     return result;
   },
 
-   parseCgtiRows: (lines) => {
+  parseCgtiRows: (lines) => {
     const DEBUG = CONFIG.DEBUG_CGTI === true;
     const rows = [];
     const diagnostics = [];
@@ -1327,60 +1327,194 @@ const PDF = {
       return groups;
     };
 
-    /*
-     * Important :
-     * - PU et total doivent porter une devise dans le texte extrait.
-     * - La quantité est située ENTRE les deux montants.
-     * - Aucun prix n'est choisi selon sa grandeur ou sa différence avec 1.
-     *
-     * Exemple : 357,69 € 1,00 357,69 €
-     */
-    const numberPattern =
-      "[+-]?(?:\\d{1,3}(?: \\d{3})+|\\d+)(?:[.,]\\d+)?";
+    const clean = (text) => String(text)
+      .replace(/\u2212/g, "-")
+      .replace(/\s+/gu, " ")
+      .trim();
+    const numberPattern = /^[+-]?(?:\d{1,3}(?: \d{3})+|\d+)(?:[.,]\d+)?$/;
+    const readNumber = (text) => {
+      const value = clean(text).replace(/ *([.,]) */g, "$1")
+        .replace(/^([+-]) +(?=\d)/, "$1");
+      return numberPattern.test(value) ? Utils.parsePrice(value) : NaN;
+    };
 
-    const amountsPattern = new RegExp(
-      "(" + numberPattern + ")\\s*(?:€|EUR)\\s*" +
-      "(" + numberPattern + ")\\s+" +
-      "(" + numberPattern + ")\\s*(?:€|EUR)\\s*$",
-      "i"
-    );
+    // Les petits interstices appartiennent au même glyphe/mot ; les grands
+    // interstices restent des frontières de cellules, notamment pour les milliers.
+    const cellsByX = (items) => {
+      const cells = [];
+      for (const item of [...items].sort((a, b) => a.x - b.x)) {
+        const previous = cells[cells.length - 1];
+        const gap = previous ? item.x - previous.right : Infinity;
+        if (!previous || gap > 6) {
+          cells.push({
+            x: item.x, right: item.x + item.width,
+            text: clean(item.str), items: [item]
+          });
+        } else {
+          previous.text += (gap <= 1.5 ? "" : " ") + clean(item.str);
+          previous.right = Math.max(previous.right, item.x + item.width);
+          previous.items.push(item);
+        }
+      }
+      return cells;
+    };
 
-    const unitSuffixPattern =
-      /(?:^|\s)(FORFAITS?|UNITES?|UNIT|U|ML|M[²³23]?|KG|G|L|JH|JOURS?|J|H|MOIS|ENSEMBLE|ENS|F|%)\s*$/i;
+    // Un en-tête complet est la seule autorisation de lire sans devises.
+    const detectLayouts = (items) => {
+      const layouts = [];
+      for (const group of groupItems(items, 1.5)) {
+        const found = {};
+        for (const cell of cellsByX(group.items)) {
+          const label = Utils.normalizeKey(cell.text).replace(/[.\s]/g, "");
+          const field = /^(UNITE|UNITES|U)$/.test(label) ? "unit"
+            : /^(PU|PRIXUNITAIRE|PUHT)$/.test(label) ? "pu"
+              : /^(QTE|QUANTITE)$/.test(label) ? "quantity"
+                : /^(TOTAL|TOTALHT|MONTANT|MONTANTHT)$/.test(label) ? "total" : "";
+          if (field) {
+            if (found[field]) {
+              found[field] = null;
+              break;
+            }
+            found[field] = cell;
+          }
+        }
+        const fields = ["unit", "pu", "quantity", "total"];
+        if (!fields.every(field => found[field])) continue;
+        const centers = fields.map(field => (found[field].x + found[field].right) / 2);
+        if (!centers.every((x, i) => !i || x > centers[i - 1] + 12)) continue;
+        const bounds = {};
+        fields.forEach((field, i) => {
+          bounds[field] = {
+            left: i ? (centers[i - 1] + centers[i]) / 2 : found.unit.x - 8,
+            right: i < 3 ? (centers[i] + centers[i + 1]) / 2 : Infinity
+          };
+        });
+        layouts.push({ y: group.y, bounds });
+      }
+      return layouts;
+    };
 
-    const readAmounts = (items) => {
-      const text = textByX(items)
-        .replace(/\u2212/g, "-")
-        .replace(/[\u00a0\u202f]/g, " ");
+    const emptyReading = () => ({
+      pu: NaN, quantity: NaN, total: NaN, unit: "", puText: "",
+      left: Infinity, puLeft: Infinity
+    });
 
-      const match = amountsPattern.exec(text);
-      if (!match) return null;
+    const readColumns = (items, layout) => {
+      const reading = emptyReading();
+      for (const field of ["unit", "pu", "quantity", "total"]) {
+        const bounds = layout.bounds[field];
+        const fragments = items.filter(item =>
+          item.x >= bounds.left && item.x + item.width <= bounds.right
+        );
+        const text = cellsByX(fragments).map(cell => cell.text).join(" ");
+        if (field === "unit") {
+          reading.unit = Utils.canonicalUnit(text);
+        } else {
+          const value = clean(text).replace(/\s*(?:€|EUR)$/i, "");
+          reading[field] = readNumber(value);
+          if (field === "pu" && Number.isFinite(reading.pu)) reading.puText = value;
+        }
+        if (fragments.length) {
+          reading.left = Math.min(reading.left, ...fragments.map(item => item.x));
+        }
+      }
+      return reading;
+    };
 
-      const pu = Utils.parsePrice(match[1]);
-      const quantity = Utils.parsePrice(match[2]);
-      const total = Utils.parsePrice(match[3]);
+    const splitNumbers = (text) => {
+      const readings = [];
+      const value = clean(text);
+      for (let i = 1; i < value.length - 1; i++) {
+        if (value[i] !== " ") continue;
+        const quantity = readNumber(value.slice(0, i));
+        const total = readNumber(value.slice(i + 1));
+        if (Number.isFinite(quantity) && Number.isFinite(total)) {
+          readings.push({ quantity, total });
+        }
+      }
+      return readings;
+    };
 
-      if (![pu, quantity, total].every(Number.isFinite)) {
-        return null;
+    const readCurrencies = (items, width) => {
+      const cells = cellsByX(items);
+      const parts = [];
+      for (const cell of cells) {
+        // Garder les frontières géométriques, même si € / EUR est isolé.
+        for (const text of cell.text.split(/(€|\bEUR\b)/i).filter(text => text.trim())) {
+          parts.push({ ...cell, text: text.trim(), currency: /^(€|EUR)$/i.test(text.trim()) });
+        }
+      }
+      const currencies = parts.map((part, i) => part.currency ? i : -1).filter(i => i >= 0);
+      if (currencies.length !== 2) return [];
+      const [first, last] = currencies;
+      if (!first || last !== parts.length - 1) return [];
+      const puCell = parts[first - 1];
+      if (puCell.x < width * 0.4) return [];
+      const reading = emptyReading();
+      reading.left = puCell.x;
+      reading.puLeft = puCell.x;
+      reading.pu = readNumber(puCell.text);
+      reading.puText = Number.isFinite(reading.pu) ? puCell.text : "";
+      if (!Number.isFinite(reading.pu)) {
+        // Un fragment peut contenir à la fois l'unité et le PU. Tester des
+        // préfixes complets, jamais un suffixe numérique d'un texte quelconque.
+        for (let i = 1; i < puCell.text.length; i++) {
+          if (puCell.text[i] !== " ") continue;
+          const unit = Utils.canonicalUnit(puCell.text.slice(0, i));
+          const puText = puCell.text.slice(i + 1);
+          const pu = readNumber(puText);
+          if (unit && Number.isFinite(pu)) {
+            reading.inlineUnit = unit;
+            reading.pu = pu;
+            reading.puText = puText;
+          }
+        }
       }
 
-      // Unité située immédiatement avant le PU.
-      // Ne pas rechercher un "m" quelconque dans la description.
-      const prefix = text.slice(0, match.index).trim();
-      const unitMatch = prefix.match(unitSuffixPattern);
+      const before = parts[first - 2];
+      if (before && before.right <= puCell.x && puCell.x - before.right <= width * 0.12) {
+        reading.unit = Utils.canonicalUnit(before.text);
+        if (reading.unit) reading.left = before.x;
+      }
 
-      return {
-        pu,
-        quantity,
-        total,
-        puText: match[1],
-        unit: unitMatch ? Utils.canonicalUnit(unitMatch[1]) : "",
-        text
-      };
+      // Ordre CGTI immuable : PU €, quantité, total €. Aucun test PU × quantité.
+      const middle = parts.slice(first + 1, last);
+      if (middle.length === 2) {
+        return [{
+          ...reading,
+          quantity: readNumber(middle[0].text),
+          total: readNumber(middle[1].text)
+        }];
+      }
+      if (middle.length === 1) {
+        const alternatives = splitNumbers(middle[0].text);
+        return alternatives.length
+          ? alternatives.map(value => ({ ...reading, ...value }))
+          : [{ ...reading, total: readNumber(middle[0].text) }];
+      }
+      return [reading];
+    };
+
+    // Une cellule décalée verticalement peut compléter une lecture, mais toutes
+    // les valeurs reconnues doivent s'accorder ; une absence n'est pas un conflit.
+    const resolveReadings = (readings) => {
+      const result = emptyReading();
+      const conflicts = [];
+      for (const field of ["pu", "quantity", "total", "unit"]) {
+        const values = [...new Set(readings.map(reading => reading[field])
+          .filter(value => field === "unit" ? Boolean(value) : Number.isFinite(value)))];
+        if (values.length === 1) result[field] = values[0];
+        if (values.length > 1) conflicts.push(field);
+      }
+      if (Number.isFinite(result.pu)) {
+        result.puText = readings.find(reading => reading.pu === result.pu).puText;
+      }
+      result.left = Math.min(...readings.map(reading => reading.left));
+      return { ...result, conflicts };
     };
 
     // Préparer les pages à partir des fragments PDF.js.
-    for (const line of lines) {
+    const prepareFragments = (line) => {
       if (!pages.has(line.page)) {
         pages.set(line.page, {
           width: null,
@@ -1419,17 +1553,9 @@ const PDF = {
         page.seen.add(key);
         page.items.push(item);
       }
-    }
+    };
 
-    for (const [pageNumber, page] of [...pages].sort(
-      (a, b) => a[0] - b[0]
-    )) {
-      if (!page.width) {
-        throw new Error(
-          `CGTI : largeur PDF absente, page ${pageNumber}.`
-        );
-      }
-
+    const detectAnchors = (page, layouts) => {
       /*
        * Détecter d'abord les codes à gauche.
        * Ne pas exiger de PU reconnu pour conserver une prestation.
@@ -1441,52 +1567,87 @@ const PDF = {
         page.items.filter(item => item.x < page.width * 0.22)
       );
 
-      const anchors = [];
+      const candidates = [];
 
       for (const group of codeGroups) {
-        const text = textByX(group.items);
-
-        const match = text.match(
-          /^\s*((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)(?=\s|[-–—:;]|$)/i
-        );
-
-        if (!match) continue;
-
-        const code = Utils.normalizeCode(match[1]);
-
-        if (anchors.some(anchor =>
-          anchor.code === code &&
-          Math.abs(anchor.y - group.y) <= 1
-        )) {
-          continue;
+        for (const tolerance of [0.8, 1.5, 2.5]) {
+          const nearby = page.items.filter(item =>
+            item.x < page.width * 0.22 && Math.abs(item.y - group.y) <= tolerance
+          );
+          const cell = cellsByX(nearby)[0];
+          if (!cell) continue;
+          const code = Utils.normalizeCode(cell.text);
+          if (!/^(?:(?:2ND|[A-Z]{2,6})\d{1,4}(?:BIS|TER)?|HB)$/.test(code)) continue;
+          if (cell.x >= page.width * 0.14 || cell.right > page.width * 0.22) continue;
+          const y = cell.items[0].y;
+          if (/^(?:DEVIS|PAGE|TOTAL)\d/.test(code)) continue;
+          if (layouts.length && y >= Math.max(...layouts.map(layout => layout.y)) - 2) continue;
+          if (!page.items.some(item =>
+            !cell.items.includes(item) && Math.abs(item.y - y) <= 12 &&
+            item.x >= page.width * 0.14
+          )) continue;
+          if (candidates.some(anchor =>
+            anchor.code === code && anchor.y === y &&
+            anchor.items.length === cell.items.length
+          )) continue;
+          candidates.push({ code, codeLabel: cell.text, y, items: cell.items });
         }
-
-        anchors.push({
-          code,
-          codeLabel: match[1],
-          y: group.y
-        });
       }
 
+      const anchors = candidates.filter(candidate => !candidates.some(other =>
+        other.items.length > candidate.items.length &&
+        candidate.items.every(item => other.items.includes(item))
+      ));
       anchors.sort((a, b) => b.y - a.y);
+      return anchors;
+    };
 
+    // Limites verticales disjointes : aucune lecture sur la prestation voisine.
+    const makeBand = (items, anchor, previous, next) => {
+      const upper = previous
+        ? Math.min(anchor.y + 12, (previous.y + anchor.y) / 2)
+        : anchor.y + 12;
+      const lower = next
+        ? Math.max(anchor.y - 12, (anchor.y + next.y) / 2)
+        : anchor.y - 12;
+      return items.filter(item => item.y > lower && item.y <= upper);
+    };
+
+    const diagnose = (pageNumber, anchor, reading, raw) => {
+      const labels = { pu: "PU", quantity: "quantité", total: "total", unit: "unité" };
+      const missing = ["pu", "quantity", "total"].filter(field => !Number.isFinite(reading[field]));
+      const errors = [];
+      if (reading.conflicts.length) {
+        errors.push("Lectures incompatibles ou ambiguës (" +
+          reading.conflicts.map(field => labels[field]).join(", ") + ") : contrôle nécessaire");
+      }
+      if (missing.length) {
+        errors.push("Cellules numériques illisibles (" +
+          missing.map(field => labels[field]).join(", ") +
+          ") : séquence PU € / quantité / total € ou colonnes non reconnues");
+      }
+      if (!reading.unit) errors.push("Unité non reconnue dans sa cellule avant le PU");
+      if (errors.length) {
+        diagnostics.push({ page: pageNumber, code: anchor.code, erreur: errors.join(" ; "), texte: raw });
+      }
+    };
+
+    lines.forEach(prepareFragments);
+    for (const [pageNumber, page] of [...pages].sort(
+      (a, b) => a[0] - b[0]
+    )) {
+      if (!page.width) {
+        throw new Error(
+          `CGTI : largeur PDF absente, page ${pageNumber}.`
+        );
+      }
+      const layouts = detectLayouts(page.items);
+      const anchors = detectAnchors(page, layouts);
       for (let index = 0; index < anchors.length; index++) {
         const anchor = anchors[index];
-        const previous = anchors[index - 1];
-        const next = anchors[index + 1];
-
-        // Limites verticales : aucune lecture sur la prestation voisine.
-        const upper = previous
-          ? Math.min(anchor.y + 12, (previous.y + anchor.y) / 2)
-          : anchor.y + 12;
-
-        const lower = next
-          ? Math.max(anchor.y - 12, (anchor.y + next.y) / 2)
-          : anchor.y - 12;
-
-        const band = page.items.filter(item =>
-          item.y > lower && item.y <= upper
-        );
+        const band = makeBand(page.items, anchor, anchors[index - 1], anchors[index + 1]);
+        const layout = layouts.filter(value => value.y > anchor.y)
+          .sort((a, b) => a.y - b.y)[0];
 
         /*
          * Examiner plusieurs lignes de base dans la bande.
@@ -1508,65 +1669,59 @@ const PDF = {
               item => Math.abs(item.y - y) <= tolerance
             );
 
-            const reading = readAmounts(items);
-            if (!reading) continue;
-
-            readings.push({
-              ...reading,
-              y,
-              distance: Math.abs(y - anchor.y),
-              tolerance
-            });
+            readings.push(...(layout
+              ? [readColumns(items, layout)]
+              : readCurrencies(items, page.width)));
           }
         }
 
-        readings.sort((a, b) =>
-          a.distance - b.distance ||
-          a.tolerance - b.tolerance
-        );
-
-        const reading = readings[0] || null;
-
-        // Si deux interprétations chiffrées différentes existent,
-        // ne pas choisir arbitrairement l'une d'elles.
-        const signatures = new Set(readings.map(value =>
-          [value.pu, value.quantity, value.total].join("|")
-        ));
-
-        const ambiguous = signatures.size > 1;
-        const valid = reading && !ambiguous;
+        const puLeft = layout ? layout.bounds.pu.left
+          : Math.min(...readings.map(reading => reading.puLeft));
+        const units = [];
+        for (const y of baselines) {
+          for (const tolerance of [0.8, 1.5, 2.5]) {
+            const items = band.filter(item => Math.abs(item.y - y) <= tolerance);
+            const cell = cellsByX(items).filter(value => layout
+              ? value.x >= layout.bounds.unit.left && value.right <= layout.bounds.unit.right
+              : value.x >= page.width * 0.5 && value.right <= puLeft &&
+                puLeft - value.right <= page.width * 0.12).pop();
+            const unit = cell ? Utils.canonicalUnit(cell.text) : "";
+            if (unit) units.push({ ...cell, unit });
+          }
+        }
+        // Ne pas opposer « m » à « m² » si la première lecture n'a vu
+        // qu'une partie des mêmes fragments. Deux unités distinctes restent un conflit.
+        const inlineUnits = readings.filter(value => value.inlineUnit)
+          .map(value => ({ ...emptyReading(), unit: value.inlineUnit, left: value.left }));
+        readings.forEach(value => { value.unit = ""; });
+        readings.push(...inlineUnits);
+        for (const value of units.filter(candidate => !units.some(other =>
+          other.items.length > candidate.items.length &&
+          candidate.items.every(item => other.items.includes(item))
+        ))) {
+          readings.push({ ...emptyReading(), unit: value.unit, left: value.x });
+        }
+        const reading = resolveReadings(readings);
 
         const raw = groupItems(band)
           .map(group => textByX(group.items))
-          .join(" ");
+          .join(" ")
+          .trim();
 
-        const pu = valid ? reading.pu : NaN;
-        const quantity = valid ? reading.quantity : NaN;
-        const total = valid ? reading.total : NaN;
-        const unit = valid ? reading.unit : "";
+        const { pu, quantity, total, unit } = reading;
 
         const designation = groupItems(
           band.filter(item =>
             item.x >= page.width * 0.14 &&
-            centerX(item) < page.width * 0.62
+            centerX(item) < Math.min(page.width * 0.62, reading.left) &&
+            !anchor.items.includes(item)
           )
         )
           .map(group => textByX(group.items))
           .join(" ")
           .trim();
 
-        if (!valid || !unit) {
-          diagnostics.push({
-            page: pageNumber,
-            code: anchor.code,
-            erreur: ambiguous
-              ? "Plusieurs lectures numériques : contrôle nécessaire"
-              : !reading
-                ? "Séquence PU € / quantité / total € non reconnue"
-                : "Unité non reconnue avant le PU",
-            texte: raw
-          });
-        }
+        diagnose(pageNumber, anchor, reading, raw);
 
         /*
          * Conserver le code même si une cellule est illisible.
@@ -1582,7 +1737,7 @@ const PDF = {
           total,
           designation,
           priceKind: "amount",
-          puText: valid ? reading.puText : "",
+          puText: reading.puText,
           page: pageNumber,
           y: anchor.y,
           rowKey: `${pageNumber}_${Math.round(anchor.y * 10)}`,
