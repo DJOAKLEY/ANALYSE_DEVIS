@@ -1394,8 +1394,10 @@ const PDF = {
     const subtotalPattern =
       /\b(?:SOUS[\s-]*TOTAL|TOTAL|TVA|TTC|NET A PAYER|ACOMPTE)\b/;
 
-    const offeredLabel = (text) =>
-      (Utils.normalizeKey(text).match(offeredPattern) || [""])[0];
+    // Texte original de la cellule "OFFERT" / "GRATUIT", sinon "".
+    const offeredLabel = (...texts) => texts.find(text =>
+      offeredPattern.test(Utils.normalizeKey(text))
+    ) || "";
 
     // Préparer les pages à partir des fragments PDF.js.
     for (const line of lines) {
@@ -1533,7 +1535,7 @@ const PDF = {
             pu: Utils.parsePdfNumber(puText),
             quantity: Utils.parsePdfNumber(quantityText),
             total: Utils.parsePdfNumber(totalText),
-            offered: offeredLabel(`${puText} ${totalText}`),
+            offered: offeredLabel(puText, totalText),
             leftText,
             outside: outsidePattern.test(Utils.normalizeKey(leftText))
           };
