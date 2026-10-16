@@ -1314,7 +1314,7 @@ const PDF = {
     return result;
   },
 
-  parseCgtiRows: (lines) => {
+    parseCgtiRows: (lines) => {
     const DEBUG = CONFIG.DEBUG_CGTI === true;
     const rows = [];
     const diagnostics = [];
@@ -1815,7 +1815,7 @@ const Compare = {
     return map;
   },
 
-  execute: (pdfRows, excelByCode, tolerance) => {
+    execute: (pdfRows, excelByCode, tolerance) => {
     if (!Number.isFinite(tolerance) || tolerance < 0) {
       throw new Error("La tolérance doit être un nombre positif ou nul.");
     }
@@ -1829,21 +1829,21 @@ const Compare = {
       aVerifier: 0,
       hb: 0,
       total: pdfRows.length
-     };
+    };
 
     for (const row of pdfRows) {
-       if (row.priceKind === "tiered_amount") {
-         output.push({
-           ...row,
-           status: "A_VERIFIER",
+      if (row.priceKind === "tiered_amount") {
+        output.push({
+          ...row,
+          status: "A_VERIFIER",
           detail:
-           "Montant de maîtrise d'œuvre calculé par tranches : " +
-           "ne pas comparer directement ce montant au tarif catalogue. " +
-           "Assiette, tranches et taux à contrôler." +
-           (row.pdfValue ? ` ; Valeur PDF : ${row.pdfValue}` : "")
-         });
-         stats.aVerifier++;
-         continue;
+            "Montant de maîtrise d'œuvre calculé par tranches : " +
+            "ne pas comparer directement ce montant au tarif catalogue. " +
+            "Assiette, tranches et taux à contrôler." +
+            (row.pdfValue ? ` ; Valeur PDF : ${row.pdfValue}` : "")
+        });
+        stats.aVerifier++;
+        continue;
       }
 
       if (row.code === "HB") {
