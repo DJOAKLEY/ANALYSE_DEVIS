@@ -846,6 +846,54 @@ const Excel = {
 const PDFHelpers = {
   centerX: (item) => Number(item.x) + (Number(item.width) || 0) / 2,
 
+ readCgtiUnit: (items, anchorY, bounds, referenceY = anchorY) => {
+    if (
+      !bounds ||
+      !Number.isFinite(bounds.left) ||
+      !Number.isFinite(bounds.right) ||
+      bounds.right <= bounds.left
+    ) {
+      return "";
+    }
+
+    const candidates = items.filter(item => {
+      const x = PDFHelpers.centerX(item);
+      return x >= bounds.left && x < bounds.right;
+    });
+
+    const readAtTolerance = (tolerance) => {
+      const nearby = candidates.filter(item =>
+        Math.min(
+          Math.abs(item.y - anchorY),
+          Math.abs(item.y - referenceY)
+        ) <= tolerance
+      );
+
+      const units = new Set();
+
+      for (const group of PDFHelpers.groupItems(nearby, 0.8)) {
+        const text = [...group.items]
+          .sort((a, b) => a.x - b.x)
+          .map(item => item.str)
+          .join(" ")
+          .trim();
+
+        const unit = Utils.canonicalUnit(text);
+        if (unit) units.add(unit);
+      }
+
+      return units;
+    };
+
+    for (const tolerance of [1.5, 3, 6]) {
+      const units = readAtTolerance(tolerance);
+      if (units.size > 1) return "";
+      if (units.size === 1) return [...units][0];
+    }
+
+    return "";
+  },
+
   cell: (items, bounds) => {
     if (!bounds) return "";
 
@@ -1298,9 +1346,9 @@ const PDF = {
     const rows = [];
     const diagnostics = [];
     const pages = new Map();
-
-    const centerX = (item) => item.x + item.width / 2;
-
+	
+	const centerX = (item) => Number(item.x) + (Number(item.width) || 0) / 2;
+	
     const textByX = (items) => [...items]
       .sort((a, b) => a.x - b.x)
       .map(item => item.str)
@@ -1430,6 +1478,35 @@ const PDF = {
         );
       }
 
+	let unitBounds = {
+        left: page.width * 0.685,
+        right: page.width * 0.765
+      };
+
+      for (const group of groupItems(page.items, 2.5)) {
+        const unitHeader = PDFHelpers.findHeaderPart(
+          group.items,
+          ["UNITE", "UNIT"]
+        );
+        const priceHeader = PDFHelpers.findHeaderPart(
+          group.items,
+          ["PRIX UNITAIRE", "PRIX UNITAIRE HT", "PU", "PU HT"]
+        );
+
+        if (
+          unitHeader &&
+          priceHeader &&
+          priceHeader.center > unitHeader.center
+        ) {
+          const halfGap = (priceHeader.center - unitHeader.center) / 2;
+          unitBounds = {
+            left: unitHeader.center - halfGap,
+            right: unitHeader.center + halfGap
+          };
+          break;
+        }
+      }
+
       /*
        * Détecter d'abord les codes à gauche.
        * Ne pas exiger de PU reconnu pour conserver une prestation.
@@ -1437,18 +1514,33 @@ const PDF = {
        * Accepte notamment :
        * RN25, ELE151, IC18, FO12, PYL100, 2ND16 et HB.
        */
+	   
+	   const anchors = [];
+	   
+	   // Un code doit occuper un fragment autonome, pas commencer un titre.
+       for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
+         const match = item.str.match(
+           /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
+         );
+ 
+         if (!match) continue;
+ 
+         const code = Utils.normalizeCode(match[1]);
+         if (/^ENTRE\d/.test(code)) continue;
+	   
       const codeGroups = groupItems(
         page.items.filter(item => item.x < page.width * 0.22)
       );
 
       const anchors = [];
+	  let stopParsingPage = false;
 
-      for (const group of codeGroups) {
-        const text = textByX(group.items);
+      for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
+        if (stopParsingPage) break;
 
-        const match = text.match(
-          /^\s*((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)(?=\s|[-–—:;]|$)/i
-        );
+         const match = item.str.match(
+           /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
+         );
 
         if (!match) continue;
 
@@ -1462,10 +1554,16 @@ const PDF = {
         }
 
         anchors.push({
-          code,
-          codeLabel: match[1],
-          y: group.y
-        });
+           code,
+           codeLabel: match[1],
+           y: item.y
+         });
+		 
+		if (stopAfterCode.has(code)) {
+          stopParsingPage = true;
+          break;
+        } 
+		 
       }
 
       anchors.sort((a, b) => b.y - a.y);
@@ -1543,8 +1641,7 @@ const PDF = {
         const pu = valid ? reading.pu : NaN;
         const quantity = valid ? reading.quantity : NaN;
         const total = valid ? reading.total : NaN;
-        const unit = valid ? reading.unit : "";
-
+        
         const designation = groupItems(
           band.filter(item =>
             item.x >= page.width * 0.14 &&
@@ -1581,14 +1678,16 @@ const PDF = {
           quantity,
           total,
           designation,
-          priceKind: "amount",
-          puText: valid ? reading.puText : "",
-          page: pageNumber,
-          y: anchor.y,
-          rowKey: `${pageNumber}_${Math.round(anchor.y * 10)}`,
-          raw
-        });
-      }
+          priceKind: /^MOE0[12]$/.test(anchor.code)
+             ? "tiered_amount"
+             : "amount",
+           puText: valid ? reading.puText : "",
+           page: pageNumber,
+           y: anchor.y,
+           rowKey: `${pageNumber}_${Math.round(anchor.y * 10)}`,
+           raw
+         });
+       }
 
       if (DEBUG) {
         console.info(`CGTI — page ${pageNumber}`, {
@@ -1661,19 +1760,23 @@ const Compare = {
       koAbsent: 0,
       koUnit: 0,
       koPrice: 0,
+      aVerifier: 0,
       hb: 0,
       total: pdfRows.length
-    };
+     };
 
     for (const row of pdfRows) {
-      if (row.priceKind === "percentage") {
-        output.push({
-          ...row,
-          status: "OK",
-          detail: "Pourcentage détecté — non comparé au tarif catalogue"
-        });
-        stats.ok++;
-        continue;
+       if (row.priceKind === "tiered_amount") {
+         output.push({
+           ...row,
+           status: "A_VERIFIER",
+          detail:
+           "Montant de maîtrise d'œuvre calculé par tranches : " +
+           "ne pas comparer directement ce montant au tarif catalogue. " +
+           "Assiette, tranches et taux à contrôler."
+         });
+         stats.aVerifier++;
+         continue;
       }
 
       if (row.code === "HB") {
@@ -2210,9 +2313,10 @@ const Actions = {
         koAbsent: 0,
         koUnit: 0,
         koPrice: 0,
+        aVerifier: 0,
         hb: 0,
         total: 0
-      };
+       };
 
       for (const file of files) {
         UI.text("summary", `Analyse de ${file.name}...`);
@@ -2253,6 +2357,7 @@ const Actions = {
         <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
         <span class="ko">KO unité : ${aggregate.koUnit}</span> |
         <span class="warn">KO prix : ${aggregate.koPrice}</span> |
+        <span class="warn">À vérifier : ${aggregate.aVerifier}</span> |
         <span class="warn">HB à vérifier : ${aggregate.hb}</span>
       `);
 
