@@ -1,0 +1,9 @@
+{
+  "name": "analyse-devis",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Analyse de devis PDF",
+  "scripts": {
+    "test": "node --test"
+  }
+}
