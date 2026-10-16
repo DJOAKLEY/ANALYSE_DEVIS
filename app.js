@@ -1299,7 +1299,7 @@ const PDF = {
     const diagnostics = [];
     const pages = new Map();
 
-    const centerX = (item) => item.x + item.width / 2;
+    const centerX = (item) => Number(item.x) + (Number(item.width) || 0) / 2;
 
     const textByX = (items) => [...items]
       .sort((a, b) => a.x - b.x)
@@ -1336,7 +1336,7 @@ const PDF = {
      * Exemple : 357,69 € 1,00 357,69 €
      */
     const numberPattern =
-      "[+-]?(?:\\d{1,3}(?: \\d{3})+|\\d+)(?:[.,]\\d+)?";
+      "[+-]?(?:\\d{1,3}(?:[\\s\\u00a0\\u202f]\\d{3})+|\\d+)(?:[.,]\\d+)?";
 
     const amountsPattern = new RegExp(
       "(" + numberPattern + ")\\s*(?:€|EUR)\\s*" +
@@ -1437,26 +1437,22 @@ const PDF = {
        * Accepte notamment :
        * RN25, ELE151, IC18, FO12, PYL100, 2ND16 et HB.
        */
-      const codeGroups = groupItems(
-        page.items.filter(item => item.x < page.width * 0.22)
-      );
-
       const anchors = [];
 
-      for (const group of codeGroups) {
-        const text = textByX(group.items);
-
-        const match = text.match(
-          /^\s*((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)(?=\s|[-–—:;]|$)/i
+      // Un code doit occuper un fragment autonome, pas commencer un titre.
+      for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
+        const match = item.str.match(
+          /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
         );
 
         if (!match) continue;
 
         const code = Utils.normalizeCode(match[1]);
+        if (/^ENTRE\d/.test(code)) continue;
 
         if (anchors.some(anchor =>
           anchor.code === code &&
-          Math.abs(anchor.y - group.y) <= 1
+          Math.abs(anchor.y - item.y) <= 1
         )) {
           continue;
         }
@@ -1464,7 +1460,7 @@ const PDF = {
         anchors.push({
           code,
           codeLabel: match[1],
-          y: group.y
+          y: item.y
         });
       }
 
@@ -1508,7 +1504,9 @@ const PDF = {
               item => Math.abs(item.y - y) <= tolerance
             );
 
-            const reading = readAmounts(items);
+            const reading = readAmounts(
+              items.filter(item => item.x >= page.width * 0.58)
+            );
             if (!reading) continue;
 
             readings.push({
@@ -1543,7 +1541,14 @@ const PDF = {
         const pu = valid ? reading.pu : NaN;
         const quantity = valid ? reading.quantity : NaN;
         const total = valid ? reading.total : NaN;
-        const unit = valid ? reading.unit : "";
+        const nearbyUnits = band.filter(item =>
+          item.x >= page.width * 0.58 &&
+          centerX(item) < page.width * 0.74 &&
+          Math.abs(item.y - anchor.y) <= 3
+        ).map(item => Utils.canonicalUnit(item.str)).filter(Boolean);
+        const fallbackUnits = [...new Set(nearbyUnits)];
+        const unit = (valid ? reading.unit : "") ||
+          (fallbackUnits.length === 1 ? fallbackUnits[0] : "");
 
         const designation = groupItems(
           band.filter(item =>
@@ -1581,7 +1586,9 @@ const PDF = {
           quantity,
           total,
           designation,
-          priceKind: "amount",
+          priceKind: /^MOE0[12]$/.test(anchor.code)
+            ? "tiered_amount"
+            : "amount",
           puText: valid ? reading.puText : "",
           page: pageNumber,
           y: anchor.y,
@@ -1661,11 +1668,25 @@ const Compare = {
       koAbsent: 0,
       koUnit: 0,
       koPrice: 0,
+	  aVerifier: 0,
       hb: 0,
       total: pdfRows.length
     };
 
     for (const row of pdfRows) {
+      if (row.priceKind === "tiered_amount") {
+        output.push({
+          ...row,
+          status: "A_VERIFIER",
+          detail:
+		  "Montant de maîtrise d'œuvre calculé par tranches : " +
+          "ne pas comparer directement ce montant au tarif catalogue. " +
+          "Assiette, tranches et taux à contrôler."
+        });
+        stats.aVerifier++;
+        continue;
+      }
+
       if (row.priceKind === "percentage") {
         output.push({
           ...row,
@@ -1773,7 +1794,7 @@ const Compare = {
     const body = rows.map(row => {
       const cssClass = row.status === "OK"
         ? "ok"
-        : ["KO_PRIX", "HB_A_VERIFIER"].includes(row.status)
+        : ["KO_PRIX", "HB_A_VERIFIER", "A_VERIFIER"].includes(row.status)
           ? "warn"
           : "ko";
 
@@ -2210,6 +2231,7 @@ const Actions = {
         koAbsent: 0,
         koUnit: 0,
         koPrice: 0,
+		aVerifier: 0,
         hb: 0,
         total: 0
       };
@@ -2247,14 +2269,15 @@ const Actions = {
       UI.setLoading("exportCsvBtn", allRows.length === 0);
 
       UI.html("summary", `
-        Fournisseur : <b>${Utils.escapeHtml(supplier)}</b><br>
-        Lignes analysées : <b>${aggregate.total}</b><br>
-        <span class="ok">OK : ${aggregate.ok}</span> |
-        <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
-        <span class="ko">KO unité : ${aggregate.koUnit}</span> |
-        <span class="warn">KO prix : ${aggregate.koPrice}</span> |
-        <span class="warn">HB à vérifier : ${aggregate.hb}</span>
-      `);
+         Fournisseur : <b>${Utils.escapeHtml(supplier)}</b><br>
+         Lignes analysées : <b>${aggregate.total}</b><br>
+         <span class="ok">OK : ${aggregate.ok}</span> |
+         <span class="ko">KO code absent : ${aggregate.koAbsent}</span> |
+         <span class="ko">KO unité : ${aggregate.koUnit}</span> |
+         <span class="warn">KO prix : ${aggregate.koPrice}</span> |
+        <span class="warn">À vérifier : ${aggregate.aVerifier}</span> |
+         <span class="warn">HB à vérifier : ${aggregate.hb}</span>
+       `);
 
       Toast.success("Analyse terminée.");
     } catch (error) {
