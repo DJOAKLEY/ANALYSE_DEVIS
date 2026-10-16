@@ -1514,53 +1514,31 @@ const PDF = {
        * Accepte notamment :
        * RN25, ELE151, IC18, FO12, PYL100, 2ND16 et HB.
        */
-	   
-	   const anchors = [];
-	   
-	   // Un code doit occuper un fragment autonome, pas commencer un titre.
-       for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
-         const match = item.str.match(
-           /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
-         );
- 
-         if (!match) continue;
- 
-         const code = Utils.normalizeCode(match[1]);
-         if (/^ENTRE\d/.test(code)) continue;
-	   
+
       const codeGroups = groupItems(
         page.items.filter(item => item.x < page.width * 0.22)
       );
 
       const anchors = [];
-	  let stopParsingPage = false;
 
-      for (const item of page.items.filter(item => item.x < page.width * 0.22)) {
-        if (stopParsingPage) break;
-
-         const match = item.str.match(
-           /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
-         );
-
+// Un code doit occuper un fragment autonome, pas commencer un titre.
+      for (const group of codeGroups) {
+        for (const item of group.items) {
+          const match = item.str.match(
+            /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|HB)$/i
+          );
+		  
         if (!match) continue;
 
         const code = Utils.normalizeCode(match[1]);
+		if (/^ENTRE\d/.test(code)) continue;
+		
+		anchors.push({
+            code,
+            codeLabel: match[1],
+            y: group.y
+          });
 
-        if (anchors.some(anchor =>
-          anchor.code === code &&
-          Math.abs(anchor.y - group.y) <= 1
-        )) {
-          continue;
-        }
-
-        anchors.push({
-           code,
-           codeLabel: match[1],
-           y: item.y
-         });
-		 
-		if (stopAfterCode.has(code)) {
-          stopParsingPage = true;
           break;
         } 
 		 
@@ -1641,6 +1619,13 @@ const PDF = {
         const pu = valid ? reading.pu : NaN;
         const quantity = valid ? reading.quantity : NaN;
         const total = valid ? reading.total : NaN;
+		const unit = reading?.unit ||
+          PDFHelpers.readCgtiUnit(
+            page.items,
+            anchor.y,
+            unitBounds,
+            reading?.y ?? anchor.y
+          );
         
         const designation = groupItems(
           band.filter(item =>
