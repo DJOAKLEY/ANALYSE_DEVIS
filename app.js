@@ -1157,7 +1157,7 @@ const PDF = {
 
   parseNewcomRows: (lines) => PDF.parseStandardRows(lines, "NEWCOM"),
 
-  parseStandardRows: (lines, supplier) => {
+    parseStandardRows: (lines, supplier) => {
     const ordered = [...lines].sort(
       (a, b) => a.page - b.page || b.y - a.y
     );
@@ -1280,10 +1280,10 @@ const PDF = {
       if (!codeMatch || !items.length) continue;
 
       const code = Utils.normalizeCode(codeMatch[1]);
-      const quantityText = PDFHelpers.cell(items, layout.quantity);
-      const puText = PDFHelpers.cell(items, layout.pu);
-      const totalText = PDFHelpers.cell(items, layout.total);
-      const unit = PDFHelpers.readUnit(items, layout.unit, true);
+      const quantityText2 = PDFHelpers.cell(items, layout.quantity);
+      const puText2 = PDFHelpers.cell(items, layout.pu);
+      const totalText2 = PDFHelpers.cell(items, layout.total);
+      const unit2 = PDFHelpers.readUnit(items, layout.unit, true);
 
       const designation = items
         .filter(item => PDFHelpers.centerX(item) < layout.unit.left)
@@ -1295,7 +1295,7 @@ const PDF = {
 
       const base = {
         code,
-        unit,
+        unit: unit2,
         designation,
         page: line.page,
         y: line.y,
@@ -1322,39 +1322,39 @@ const PDF = {
             puText: pctMatch[0]
           });
         } else {
-          const rate = unit === "%"
-            ? Utils.parsePdfNumber(quantityText)
+          const rate = unit2 === "%"
+            ? Utils.parsePdfNumber(quantityText2)
             : pctMatch
               ? Utils.parsePrice(pctMatch[1])
               : NaN;
 
-          const pu = Utils.parsePdfNumber(puText);
+          const pu = Utils.parsePdfNumber(puText2);
           if (!Number.isFinite(rate) || !Number.isFinite(pu)) continue;
 
           rows.push({
             ...base,
-            unit: unit || "%",
+            unit: unit2 || "%",
             pu,
             quantity: rate,
-            total: Utils.parsePdfNumber(totalText),
+            total: Utils.parsePdfNumber(totalText2),
             priceKind: "percentage",
-            puText
+            puText: puText2
           });
         }
 
         continue;
       }
 
-      const pu = Utils.parsePdfNumber(puText);
+      const pu = Utils.parsePdfNumber(puText2);
       if (!Number.isFinite(pu)) continue;
 
       rows.push({
         ...base,
         pu,
-        quantity: Utils.parsePdfNumber(quantityText),
-        total: Utils.parsePdfNumber(totalText),
+        quantity: Utils.parsePdfNumber(quantityText2),
+        total: Utils.parsePdfNumber(totalText2),
         priceKind: "amount",
-        puText
+        puText: puText2
       });
     }
 
@@ -1366,7 +1366,7 @@ const PDF = {
 
     return result;
   },
-
+  
       parseCgtiRows: (lines) => {
     const DEBUG = CONFIG.DEBUG_CGTI === true;
     const rows = [];
