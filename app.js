@@ -1333,44 +1333,67 @@ const PDF = {
       return x >= column.left && x < column.right;
     };
 
-    /*
-     * Chaque valeur est lue dans SA colonne (unité, PU, quantité,
-     * total), délimitée à partir de l'en-tête du tableau.
-     * Le texte complet de la ligne n'est jamais analysé : le "3"
-     * d'un "M3" (souvent en exposant) ne peut plus être pris pour
-     * le début du prix unitaire.
-     */
-    const headerOrder = ["unit", "pu", "quantity", "total"];
+    const codePattern =
+      /^(?:(?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|H\.?\s*B\.?)$/i;
+
+    const outsidePattern =
+      /^(?:HORS[\s-]*BORDEREAU|PRESTA(?:TION)?S?\s+NON\s+COUVERTES?\s+AU\s+BPU)$/i;
+
     const headerSchema = {
-      unit: ["UNITE", "UNIT", "U"],
+      unit: ["UNITE", "UNIT"],
       pu: [
-        "PRIX UNITAIRE", "PRIX UNITAIRE HT", "PRIX UNIT", "PRIX U",
-        "PU", "PU HT"
+        "PRIX UNITAIRE", "PRIX UNITAIRE HT", "PRIX UNIT",
+        "PRIX U", "PU", "PU HT"
       ],
       quantity: ["QUANTITE", "QTE", "QTES", "QUANT"],
       total: [
-        "TOTAL", "TOTAL HT", "MONTANT", "MONTANT HT",
-        "PRIX TOTAL", "PRIX TOTAL HT", "PT HT"
+        "PRIX HT", "PRIX HT EURO",
+        "PRIX TOTAL", "PRIX TOTAL HT",
+        "TOTAL", "TOTAL HT", "MONTANT HT", "PT HT"
       ]
+    };
+
+    const headerOrder = ["unit", "pu", "quantity", "total"];
+
+    const readNumber = (text) => {
+      const cleaned = String(text ?? "")
+        .replace(/\u2212/g, "-")
+        .replace(/[\u00a0\u202f]/g, " ")
+        .replace(/€/g, "")
+        .replace(/\bEUR\b/gi, "")
+        .trim();
+
+      if (!cleaned) return NaN;
+
+      if (!/^[+-]?(?:\d{1,3}(?: \d{3})+|\d+)(?:[.,]\d+)?$/.test(cleaned)) {
+        return NaN;
+      }
+
+      return Utils.parsePrice(cleaned);
     };
 
     const findLayout = (items) => {
       for (const tolerance of [2.5, 8]) {
         for (const group of groupItems(items, tolerance)) {
+          const headerItems = items.filter(item =>
+            Math.abs(item.y - group.y) <= tolerance
+          );
+
           const found = PDFHelpers.findHeader(
-            group.items,
+            headerItems,
             headerSchema,
             headerOrder
           );
           if (!found) continue;
 
-          const layout = PDFHelpers.layoutFromCenters(found, headerOrder);
-          layout.unit.left = found.unit.center -
+          const columns = PDFHelpers.layoutFromCenters(found, headerOrder);
+          columns.unit.left = found.unit.center -
             (found.pu.center - found.unit.center) / 2;
 
           return {
-            ...layout,
-            headerY: Math.min(...group.items.map(item => item.y))
+            columns,
+            width: Math.max(...items.map(item => item.x + item.width), 0),
+            headerY: group.y - tolerance
           };
         }
       }
@@ -1378,26 +1401,16 @@ const PDF = {
       return null;
     };
 
-    // Colonnes par défaut si aucun en-tête n'est reconnu.
     const defaultLayout = (width) => ({
-      unit: { left: width * 0.685, right: width * 0.765 },
-      pu: { left: width * 0.765, right: width * 0.845 },
-      quantity: { left: width * 0.845, right: width * 0.905 },
-      total: { left: width * 0.905, right: Infinity },
+      columns: {
+        unit: { left: width * 0.685, right: width * 0.765 },
+        pu: { left: width * 0.765, right: width * 0.845 },
+        quantity: { left: width * 0.845, right: width * 0.905 },
+        total: { left: width * 0.905, right: Infinity }
+      },
+      width,
       headerY: Infinity
     });
-
-    const codePattern =
-      /^((?:2\s*ND|[A-Z]{2,6})[\s_-]*\d{1,4}(?:BIS|TER)?|H\.?\s*B\.?)$/i;
-    const offeredPattern = /\b(?:OFFERTE?S?|GRATUITE?S?)\b/;
-    const outsidePattern = /\bHORS[\s-]*BORDEREAU\b|^H\.?\s?B\b/;
-    const subtotalPattern =
-      /\b(?:SOUS[\s-]*TOTAL|TOTAL|TVA|TTC|NET A PAYER|ACOMPTE)\b/;
-
-    // Texte original de la cellule "OFFERT" / "GRATUIT", sinon "".
-    const offeredLabel = (...texts) => texts.find(text =>
-      offeredPattern.test(Utils.normalizeKey(text))
-    ) || "";
 
     // Préparer les pages à partir des fragments PDF.js.
     for (const line of lines) {
@@ -1453,100 +1466,97 @@ const PDF = {
       }
 
       const detected = findLayout(page.items);
+      const layout = detected ||
+        (lastLayout && Math.abs(lastLayout.width - page.width) < 1
+          ? { ...lastLayout, headerY: Infinity }
+          : defaultLayout(page.width));
 
-      if (!detected && !lastLayout) {
-        diagnostics.push({
-          page: pageNumber,
-          code: "",
-          erreur: "En-tête du tableau non reconnu : colonnes par défaut",
-          texte: ""
-        });
+      if (detected) {
+        lastLayout = layout;
       }
 
-      const layout = detected ||
-        (lastLayout ? { ...lastLayout, headerY: Infinity } : null) ||
-        defaultLayout(page.width);
-
-      if (detected) lastLayout = detected;
-
-      // Ignorer tout ce qui précède l'en-tête (n° de devis, adresses...).
-      const body = page.items.filter(item => item.y < layout.headerY - 0.5);
+      // On garde tout ce qui est sous l'en-tête.
+      const body = page.items.filter(item => item.y < layout.headerY);
       const tokens = body.flatMap(PDFHelpers.splitItem);
 
-      /*
-       * 1. Codes : fragment autonome dans la colonne de gauche.
-       * Accepte notamment RN25, ELE151, IC18, FO12, PYL100, 2ND16 et HB.
-       */
       const codeAnchors = [];
 
+      // Détection du code dans la colonne de gauche.
       for (const group of groupItems(
         body.filter(item => item.x < page.width * 0.22),
-        0.8
+        1.0
       )) {
-        for (const item of group.items) {
-          const match = item.str.match(codePattern);
-          if (!match) continue;
+        const sorted = [...group.items].sort((a, b) => a.x - b.x);
 
-          let code = Utils.normalizeCode(match[1]).replace(/\./g, "");
-          if (/^ENTRE\d/.test(code)) continue;
-          if (/^HB\d*$/.test(code)) code = "HB";
+        for (let start = 0; start < sorted.length; start++) {
+          for (let count = 1; count <= 4; count++) {
+            const fragments = sorted.slice(start, start + count);
+            if (fragments.length !== count) continue;
 
-          codeAnchors.push({
-            code,
-            codeLabel: match[1],
-            y: item.y,
-            item,
-            line: null,
-            extraLines: []
-          });
+            const label = textByX(fragments);
+            const normalized = Utils.normalizeKey(label);
 
-          break;
+            const isOutside = outsidePattern.test(normalized);
+            const codeMatch = label.match(codePattern);
+
+            if (!isOutside && !codeMatch) continue;
+
+            codeAnchors.push({
+              code: isOutside ? "HB" : Utils.normalizeCode(codeMatch[1]),
+              codeLabel: label,
+              y: fragments[0].y,
+              x: Math.min(...fragments.map(item => item.x)),
+              right: Math.max(...fragments.map(item => item.x + item.width))
+            });
+            break;
+          }
         }
       }
 
       codeAnchors.sort((a, b) => b.y - a.y);
 
-      /*
-       * 2. Lignes chiffrées : lues uniquement dans les colonnes
-       * PU / quantité / total.
-       */
-      const numericColumns = [layout.pu, layout.quantity, layout.total];
-
       const amountLines = groupItems(
         tokens.filter(token =>
-          numericColumns.some(column => inColumn(token, column))
+          inColumn(token, layout.columns.pu) ||
+          inColumn(token, layout.columns.quantity) ||
+          inColumn(token, layout.columns.total)
         ),
         1.5
       )
         .map(group => {
-          const puText = cell(group.items, layout.pu);
-          const quantityText = cell(group.items, layout.quantity);
-          const totalText = cell(group.items, layout.total);
-          const leftText = textByX(tokens.filter(token =>
-            Math.abs(token.y - group.y) <= 1.5 &&
-            centerX(token) < layout.unit.left
-          ));
+          const puText = cell(group.items, layout.columns.pu);
+          const quantityText = cell(group.items, layout.columns.quantity);
+          const totalText = cell(group.items, layout.columns.total);
+
+          const lineText = textByX(group.items);
+          const outsideLabel = outsidePattern.test(Utils.normalizeKey(lineText))
+            ? lineText
+            : "";
+
+          const pu = readNumber(puText);
+          const quantity = readNumber(quantityText);
+          const total = readNumber(totalText);
 
           return {
             y: group.y,
             puText,
             quantityText,
             totalText,
-            pu: Utils.parsePdfNumber(puText),
-            quantity: Utils.parsePdfNumber(quantityText),
-            total: Utils.parsePdfNumber(totalText),
-            offered: offeredLabel(puText, totalText),
-            leftText,
-            outside: outsidePattern.test(Utils.normalizeKey(leftText))
+            pu,
+            quantity,
+            total,
+            outsideLabel,
+            offered: /^(?:OFFERT(?:E)?S?|GRATUIT(?:E)?S?)$/i.test(
+              totalText.trim()
+            )
           };
         })
         .filter(line =>
           Number.isFinite(line.pu) ||
           line.offered ||
-          (Number.isFinite(line.quantity) && Number.isFinite(line.total))
+          line.outsideLabel
         );
 
-      // 3. Rattacher chaque ligne chiffrée au code le plus proche.
       const pairs = [];
 
       codeAnchors.forEach((anchor, anchorIndex) => {
@@ -1554,8 +1564,10 @@ const PDF = {
           const distance = Math.abs(anchor.y - line.y);
           if (distance > 12) return;
 
-          // Une ligne "hors bordereau" ne peut pas être volée par un voisin.
-          if (line.outside && anchor.code !== "HB" && distance > 1.5) return;
+          // On évite de voler une ligne hors bordereau à son voisin.
+          if (line.outsideLabel && anchor.code !== "HB" && distance > 1.5) {
+            return;
+          }
 
           pairs.push({ anchorIndex, lineIndex, distance });
         });
@@ -1573,60 +1585,38 @@ const PDF = {
         usedLines.add(pair.lineIndex);
       }
 
-      /*
-       * 4. Lignes chiffrées sans code : tranches MOE (rattachées
-       * à MOE01/MOE02) ou lignes hors bordereau (ancres HB).
-       * Elles ne perturbent ainsi plus la lecture des voisines.
-       */
+      // Lignes hors bordereau sans code.
       const outsideAnchors = [];
 
       amountLines.forEach((line, lineIndex) => {
         if (usedLines.has(lineIndex)) return;
 
-        const owner = [...codeAnchors, ...outsideAnchors]
-          .filter(anchor => anchor.y > line.y)
-          .sort((a, b) => a.y - b.y)[0];
+        const isOutside = Boolean(line.outsideLabel);
+        const lineText = textByX(tokens.filter(token =>
+          Math.abs(token.y - line.y) <= 1.5
+        ));
 
-        if (!line.outside && owner && /^MOE0[12]$/.test(owner.code)) {
-          owner.extraLines.push(line);
-          return;
-        }
-
-        if (!line.outside) {
-          const lineText = textByX(tokens.filter(token =>
-            Math.abs(token.y - line.y) <= 1.5
-          ));
-
-          if (subtotalPattern.test(Utils.normalizeKey(lineText))) return;
+        if (!isOutside) {
+          const normalized = Utils.normalizeKey(lineText);
+          if (/^(TOTAL|SOUS\s*TOTAL|TTC|TVA|NET A PAYER|ACOMPTE)/.test(normalized)) {
+            return;
+          }
           if (!Number.isFinite(line.pu) && !line.offered) return;
         }
 
         outsideAnchors.push({
           code: "HB",
-          codeLabel: "",
+          codeLabel: line.outsideLabel || "HORS BORDEREAU",
           y: line.y,
-          item: null,
+          x: 0,
+          right: 0,
           line,
           extraLines: []
         });
       });
 
       const anchors = [...codeAnchors, ...outsideAnchors]
-        .map(anchor => {
-          const ys = [
-            anchor.y,
-            anchor.line?.y ?? anchor.y,
-            ...anchor.extraLines.map(line => line.y)
-          ];
-
-          return {
-            ...anchor,
-            refY: anchor.line?.y ?? anchor.y,
-            top: Math.max(...ys),
-            bottom: Math.min(...ys)
-          };
-        })
-        .sort((a, b) => b.top - a.top);
+        .sort((a, b) => b.y - a.y);
 
       for (let index = 0; index < anchors.length; index++) {
         const anchor = anchors[index];
@@ -1634,24 +1624,21 @@ const PDF = {
         const next = anchors[index + 1];
         const line = anchor.line;
 
-        // Limites verticales : aucune lecture sur la prestation voisine.
         const upper = previous
-          ? Math.min(anchor.top + 12, (previous.bottom + anchor.top) / 2)
-          : anchor.top + 12;
+          ? Math.min(anchor.y + 12, (previous.y + anchor.y) / 2)
+          : anchor.y + 12;
 
         const lower = next
-          ? Math.max(anchor.bottom - 12, (anchor.bottom + next.top) / 2)
-          : anchor.bottom - 12;
+          ? Math.max(anchor.y - 12, (anchor.y + next.y) / 2)
+          : anchor.y - 12;
 
-        const inBand = (item) => item.y > lower && item.y <= upper;
-        const bandTokens = tokens.filter(inBand);
+        const band = body.filter(item => item.y > lower && item.y <= upper);
 
-        // Unité : fragments de la colonne, exposants compris ("M" + "3").
-        const unitTokens = bandTokens.filter(token =>
-          inColumn(token, layout.unit) &&
+        const unitTokens = band.filter(token =>
+          inColumn(token, layout.columns.unit) &&
           (
-            Math.abs(token.y - anchor.refY) <= 4 ||
-            Math.abs(token.y - anchor.y) <= 4
+            Math.abs(token.y - anchor.y) <= 4 ||
+            Math.abs(token.y - (line?.y ?? anchor.y)) <= 4
           )
         );
 
@@ -1659,9 +1646,9 @@ const PDF = {
         const unit = Utils.canonicalUnit(unitText);
 
         const designation = groupItems(
-          bandTokens.filter(token =>
-            centerX(token) < layout.unit.left &&
-            (!anchor.item || token.source !== anchor.item)
+          band.filter(item =>
+            centerX(item) < layout.columns.unit.left &&
+            centerX(item) >= (anchor.right || 0)
           ),
           0.8
         )
@@ -1669,7 +1656,7 @@ const PDF = {
           .join(" ")
           .trim();
 
-        const raw = groupItems(body.filter(inBand), 0.8)
+        const raw = groupItems(band, 0.8)
           .map(group => textByX(group.items))
           .join(" ");
 
@@ -1686,24 +1673,10 @@ const PDF = {
             issues.push(`PU illisible («${line.puText || "vide"}»)`);
           }
           if (!Number.isFinite(quantity)) {
-            issues.push(
-              `quantité illisible («${line.quantityText || "vide"}»)`
-            );
+            issues.push(`quantité illisible («${line.quantityText || "vide"}»)`);
           }
-          if (!Number.isFinite(total)) {
+          if (!Number.isFinite(total) && !line.offered) {
             issues.push(`total illisible («${line.totalText || "vide"}»)`);
-          }
-
-          if ([pu, quantity, total].every(Number.isFinite)) {
-            const expected = pu * quantity;
-            const limit = Math.max(0.05, Math.abs(total) * 0.005);
-
-            if (Math.abs(expected - total) > limit) {
-              issues.push(
-                `PU × quantité = ${expected.toFixed(2)} ` +
-                `≠ total ${total.toFixed(2)}`
-              );
-            }
           }
         }
 
@@ -1725,11 +1698,6 @@ const PDF = {
           });
         }
 
-        /*
-         * Conserver le code même si une cellule est illisible.
-         * La comparaison signalera A_VERIFIER plutôt que de faire
-         * disparaître la prestation du CSV.
-         */
         rows.push({
           code: anchor.code,
           codeLabel: anchor.codeLabel,
@@ -1737,15 +1705,16 @@ const PDF = {
           unitText,
           pu,
           quantity,
-          total,
+          total: line?.offered ? 0 : total,
           designation,
           priceKind: isTiered ? "tiered_amount" : "amount",
           puText: line ? line.puText : "",
           quantityText: line ? line.quantityText : "",
           totalText: line ? line.totalText : "",
-          pdfValue: line ? line.offered : "",
+          pdfValue: line?.offered ? "OFFERT" : "",
           offered: Boolean(line?.offered),
           outsideCatalog: anchor.code === "HB",
+          outsideLabel: anchor.code === "HB" ? (anchor.codeLabel || "") : "",
           extractionIssue,
           page: pageNumber,
           y: anchor.y,
@@ -1770,8 +1739,7 @@ const PDF = {
 
     if (!result.length) {
       throw new Error(
-        "CGTI : aucun code de prestation reconnu. " +
-        "Consultez la console du navigateur."
+        "CGTI : aucun code de prestation reconnu. Consultez la console."
       );
     }
 
@@ -1781,14 +1749,13 @@ const PDF = {
         unite: row.unit,
         pu: row.pu,
         quantite: row.quantity,
-        total: row.total,
-        aVerifier: row.extractionIssue
+        total: row.total
       })));
     }
 
     return result;
   },
-
+ 
   parseGenericRows: () => {
     throw new Error(
       "Ce fournisseur ne dispose pas encore d'un analyseur PDF."
