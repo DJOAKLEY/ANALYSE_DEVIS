@@ -1157,7 +1157,7 @@ const PDF = {
 
   parseNewcomRows: (lines) => PDF.parseStandardRows(lines, "NEWCOM"),
 
-    parseStandardRows: (lines, supplier) => {
+  parseStandardRows: (lines, supplier) => {
     const ordered = [...lines].sort(
       (a, b) => a.page - b.page || b.y - a.y
     );
@@ -1210,6 +1210,9 @@ const PDF = {
 
     const headerPages = [...layouts.keys()].sort((a, b) => a - b);
     const rows = [];
+    const pattern = supplier === "AXIANS"
+      ? /^\s*(HB|MOE01|MOE02|[A-Z]{2,6}[\s_-]*\d{1,4}(?:BIS|TER|[A-Z])?)\b/i
+      : /^\s*(MOE01|MOE02|HB|[A-Z0-9]{2,12})\b/i;
 
     for (const line of ordered) {
       const previousPage = headerPages.filter(page => page <= line.page).pop();
@@ -1220,7 +1223,12 @@ const PDF = {
       const items = line.items || [];
 
       const codeCellText = PDFHelpers.cell(items, layout.code).trim();
-      const unitText = PDFHelpers.cell(items, layout.unit);
+      const codeMatch = codeCellText.match(pattern);
+      const hasCode = Boolean(codeMatch && (
+        /\d/.test(codeMatch[1]) ||
+        Utils.normalizeCode(codeMatch[1]) === "HB" ||
+        Utils.normalizeCode(codeCellText) === Utils.normalizeCode(codeMatch[1])
+      ));
       const puText = PDFHelpers.cell(items, layout.pu);
       const quantityText = PDFHelpers.cell(items, layout.quantity);
       const totalText = PDFHelpers.cell(items, layout.total);
@@ -1233,7 +1241,7 @@ const PDF = {
       const rowDesign = items
         .filter(item => {
           const x = PDFHelpers.centerX(item);
-          return x >= layout.code.right && x < layout.unit.left;
+          return x < layout.unit.left;
         })
         .sort((a, b) => a.x - b.x)
         .map(item => item.str)
@@ -1241,61 +1249,52 @@ const PDF = {
         .replace(/\s+/g, " ")
         .trim();
 
-      const hasUsableNoCodeLine =
-        !codeCellText &&
-        Boolean(rowDesign) &&
-        Boolean(unit) &&
-        Number.isFinite(pu) &&
-        Number.isFinite(quantity);
+      const isSummary =
+        /^(?:TOTAL|SOUS[\s-]*TOTAL|MONTANT|TVA|TTC|NET A PAYER|ACOMPTE|REMISE)\b/
+          .test(Utils.normalizeKey(rowDesign));
+      if (isSummary) continue;
 
-      if (hasUsableNoCodeLine) {
-        rows.push({
-          code: "HB",
-          codeLabel: "Sans code dans le PDF",
-          sourceCode: "",
-          outsideCatalog: true,
-          outsideLabel: rowDesign,
-          designation: rowDesign,
-          unit,
-          pu,
-          quantity,
-          total,
-          puText,
-          quantityText,
-          totalText,
-          priceKind: "amount",
-          page: line.page,
-          y: line.y,
-          rowKey: `${line.page}_${Math.round(line.y * 10)}`,
-          raw: text
-        });
+      if (!hasCode) {
+        const noCodeUnit = PDFHelpers.readUnit(items, layout.unit);
+        const hasUsableNoCodeLine =
+          Boolean(rowDesign) &&
+          Boolean(noCodeUnit) &&
+          noCodeUnit !== "%" &&
+          Number.isFinite(pu) &&
+          Number.isFinite(quantity);
+
+        if (hasUsableNoCodeLine) {
+          rows.push({
+            code: "HB",
+            codeLabel: "Sans code dans le PDF",
+            sourceCode: "",
+            outsideCatalog: true,
+            outsideLabel: rowDesign,
+            designation: rowDesign,
+            unit: noCodeUnit,
+            pu,
+            quantity,
+            total,
+            puText,
+            quantityText,
+            totalText,
+            priceKind: "amount",
+            page: line.page,
+            y: line.y,
+            rowKey: `${line.page}_${Math.round(line.y * 10)}`,
+            raw: text
+          });
+        }
         continue;
       }
 
-      const pattern = supplier === "AXIANS"
-        ? /^\s*(HB|MOE01|MOE02|[A-Z]{2,6}[\s_-]*\d{1,4}(?:BIS|TER|[A-Z])?)\b/i
-        : /^\s*(MOE01|MOE02|HB|[A-Z0-9]{2,12})\b/i;
-
-      const codeMatch = text.match(pattern);
-      if (!codeMatch || !items.length) continue;
-
       const code = Utils.normalizeCode(codeMatch[1]);
-      const quantityText2 = PDFHelpers.cell(items, layout.quantity);
-      const puText2 = PDFHelpers.cell(items, layout.pu);
-      const totalText2 = PDFHelpers.cell(items, layout.total);
-      const unit2 = PDFHelpers.readUnit(items, layout.unit, true);
 
-      const designation = items
-        .filter(item => PDFHelpers.centerX(item) < layout.unit.left)
-        .sort((a, b) => a.x - b.x)
-        .map(item => item.str)
-        .join(" ")
-        .replace(codeMatch[0], "")
-        .trim();
+      const designation = rowDesign.replace(codeMatch[0], "").trim();
 
       const base = {
         code,
-        unit: unit2,
+        unit,
         designation,
         page: line.page,
         y: line.y,
@@ -1322,39 +1321,37 @@ const PDF = {
             puText: pctMatch[0]
           });
         } else {
-          const rate = unit2 === "%"
-            ? Utils.parsePdfNumber(quantityText2)
+          const rate = unit === "%"
+            ? quantity
             : pctMatch
               ? Utils.parsePrice(pctMatch[1])
               : NaN;
 
-          const pu = Utils.parsePdfNumber(puText2);
           if (!Number.isFinite(rate) || !Number.isFinite(pu)) continue;
 
           rows.push({
             ...base,
-            unit: unit2 || "%",
+            unit: unit || "%",
             pu,
             quantity: rate,
-            total: Utils.parsePdfNumber(totalText2),
+            total,
             priceKind: "percentage",
-            puText: puText2
+            puText
           });
         }
 
         continue;
       }
 
-      const pu = Utils.parsePdfNumber(puText2);
       if (!Number.isFinite(pu)) continue;
 
       rows.push({
         ...base,
         pu,
-        quantity: Utils.parsePdfNumber(quantityText2),
-        total: Utils.parsePdfNumber(totalText2),
+        quantity,
+        total,
         priceKind: "amount",
-        puText: puText2
+        puText
       });
     }
 
@@ -1366,8 +1363,8 @@ const PDF = {
 
     return result;
   },
-  
-      parseCgtiRows: (lines) => {
+
+  parseCgtiRows: (lines) => {
     const DEBUG = CONFIG.DEBUG_CGTI === true;
     const rows = [];
     const diagnostics = [];
@@ -1564,7 +1561,8 @@ const PDF = {
               codeLabel: label,
               y: fragments[0].y,
               x: Math.min(...fragments.map(item => item.x)),
-              right: Math.max(...fragments.map(item => item.x + item.width))
+              right: Math.max(...fragments.map(item => item.x + item.width)),
+              extraLines: []
             });
             break;
           }
@@ -1586,9 +1584,16 @@ const PDF = {
           const quantityText = cell(group.items, layout.columns.quantity);
           const totalText = cell(group.items, layout.columns.total);
 
-          const lineText = textByX(group.items);
-          const outsideLabel = outsidePattern.test(Utils.normalizeKey(lineText))
-            ? lineText
+          const lineText = textByX(tokens.filter(token =>
+            Math.abs(token.y - group.y) <= 1.5
+          ));
+          const leftText = textByX(tokens.filter(token =>
+            Math.abs(token.y - group.y) <= 1.5 &&
+            centerX(token) < layout.columns.unit.left
+          ));
+          const outsideLabel = /^(?:HORS[\s-]*BORDEREAU|PRESTA(?:TION)?S?\s+NON\s+COUVERTES?\s+AU\s+BPU)\b/
+            .test(Utils.normalizeKey(leftText))
+            ? leftText
             : "";
 
           const pu = readNumber(puText);
@@ -1613,7 +1618,8 @@ const PDF = {
         .filter(line =>
           Number.isFinite(line.pu) ||
           line.offered ||
-          line.outsideLabel
+          line.outsideLabel ||
+          (Number.isFinite(line.quantity) && Number.isFinite(line.total))
         );
 
       // Fusionne les hors bordereau sur 2 lignes quand le libellé est coupé.
@@ -1686,6 +1692,16 @@ const PDF = {
           if (/^(TOTAL|SOUS\s*TOTAL|TTC|TVA|NET A PAYER|ACOMPTE)/.test(normalized)) {
             return;
           }
+
+          const owner = [...codeAnchors, ...outsideAnchors]
+            .filter(anchor => anchor.y > line.y)
+            .sort((a, b) => a.y - b.y)[0];
+
+          if (owner && /^MOE0[12]$/.test(owner.code)) {
+            owner.extraLines.push(line);
+            return;
+          }
+
           if (!Number.isFinite(line.pu) && !line.offered) return;
         }
 
@@ -1701,7 +1717,20 @@ const PDF = {
       });
 
       const anchors = [...codeAnchors, ...outsideAnchors]
-        .sort((a, b) => b.y - a.y);
+        .map(anchor => {
+          const ys = [
+            anchor.y,
+            anchor.line?.y ?? anchor.y,
+            ...anchor.extraLines.map(line => line.y)
+          ];
+
+          return {
+            ...anchor,
+            top: Math.max(...ys),
+            bottom: Math.min(...ys)
+          };
+        })
+        .sort((a, b) => b.top - a.top);
 
       for (let index = 0; index < anchors.length; index++) {
         const anchor = anchors[index];
@@ -1710,16 +1739,17 @@ const PDF = {
         const line = anchor.line;
 
         const upper = previous
-          ? Math.min(anchor.y + 12, (previous.y + anchor.y) / 2)
-          : anchor.y + 12;
+          ? Math.min(anchor.top + 12, (previous.bottom + anchor.top) / 2)
+          : anchor.top + 12;
 
         const lower = next
-          ? Math.max(anchor.y - 12, (anchor.y + next.y) / 2)
-          : anchor.y - 12;
+          ? Math.max(anchor.bottom - 12, (anchor.bottom + next.top) / 2)
+          : anchor.bottom - 12;
 
         const band = body.filter(item => item.y > lower && item.y <= upper);
 
-        const unitTokens = band.filter(token =>
+        const unitTokens = tokens.filter(token =>
+          token.y > lower && token.y <= upper &&
           inColumn(token, layout.columns.unit) &&
           (
             Math.abs(token.y - anchor.y) <= 4 ||
@@ -1762,6 +1792,18 @@ const PDF = {
           }
           if (!Number.isFinite(total) && !line.offered) {
             issues.push(`total illisible («${line.totalText || "vide"}»)`);
+          }
+
+          if ([pu, quantity, total].every(Number.isFinite)) {
+            const expected = pu * quantity;
+            const limit = Math.max(0.05, Math.abs(total) * 0.005);
+
+            if (Math.abs(expected - total) > limit) {
+              issues.push(
+                `PU × quantité = ${expected.toFixed(2)} ` +
+                `≠ total ${total.toFixed(2)}`
+              );
+            }
           }
         }
 
@@ -1867,7 +1909,7 @@ const Compare = {
     return map;
   },
 
-    execute: (pdfRows, excelByCode, tolerance) => {
+  execute: (pdfRows, excelByCode, tolerance) => {
     if (!Number.isFinite(tolerance) || tolerance < 0) {
       throw new Error("La tolérance doit être un nombre positif ou nul.");
     }
@@ -1898,7 +1940,7 @@ const Compare = {
         continue;
       }
 
-            if (row.code === "HB") {
+      if (row.code === "HB") {
         const hasNumbers = [row.quantity, row.pu, row.total]
           .every(Number.isFinite);
 
