@@ -144,6 +144,19 @@ for (const supplier of ["NEWCOM", "AXIANS"]) {
   });
 }
 
+test("AXIANS : référence répartie de part et d'autre de la limite de colonne", () => {
+  const row = priced(710, "", "Prestation codée", "U", "1", "10", "10");
+  row.items[0] = item(140, 710, "Prestation codée", 140);
+  row.items.unshift(item(105, 710, "RN", 12), item(119, 710, "25", 10));
+  row.text = row.items.map(value => value.str).join(" ");
+  const [parsed] = PDF.parseAxiansRows([header("AXIANS"), row]);
+  assert.equal(parsed.code, "RN25");
+  assert.equal(parsed.designation, "Prestation codée");
+  assert.equal(Compare.execute([parsed],
+    new Map([["RN25", [{ unit: "U", pu: 10 }]]]), 0.01
+  ).output[0].status, "OK");
+});
+
 test("NEWCOM : libellés HB échappés dans le tableau et conservés dans le CSV", async () => {
   const results = { innerHTML: "" };
   const link = { click() {}, remove() {} };

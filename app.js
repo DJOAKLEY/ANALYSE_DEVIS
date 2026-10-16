@@ -1223,11 +1223,15 @@ const PDF = {
       const items = line.items || [];
 
       const codeCellText = PDFHelpers.cell(items, layout.code).trim();
-      const codeMatch = codeCellText.match(pattern);
-      const hasCode = Boolean(codeMatch && (
+      const codeMatch = text.match(pattern);
+      const cellCode = Utils.normalizeCode(codeCellText);
+      const matchedCode = Utils.normalizeCode(codeMatch?.[1]);
+      const hasCode = Boolean(codeMatch && cellCode && (
+        cellCode.startsWith(matchedCode) || matchedCode.startsWith(cellCode)
+      ) && (
         /\d/.test(codeMatch[1]) ||
-        Utils.normalizeCode(codeMatch[1]) === "HB" ||
-        Utils.normalizeCode(codeCellText) === Utils.normalizeCode(codeMatch[1])
+        matchedCode === "HB" ||
+        cellCode === matchedCode
       ));
       const puText = PDFHelpers.cell(items, layout.pu);
       const quantityText = PDFHelpers.cell(items, layout.quantity);
@@ -1697,7 +1701,7 @@ const PDF = {
             .filter(anchor => anchor.y > line.y)
             .sort((a, b) => a.y - b.y)[0];
 
-          if (owner && /^MOE0[12]$/.test(owner.code)) {
+          if (owner && /^MOE0[12]$/.test(owner.code) && /^TRANCHE\b/.test(normalized)) {
             owner.extraLines.push(line);
             return;
           }

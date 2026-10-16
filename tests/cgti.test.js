@@ -101,6 +101,24 @@ test("CGTI : MOE02 reste tiered_amount et conserve OFFERT", () => {
   assert.match(row.raw, /Tranche 1/);
 });
 
+test("CGTI : une prestation sans code après MOE n'est pas une tranche", () => {
+  const lines = fixture.lines();
+  const service = lines.find(line => line.y === 530);
+  service.items = service.items.map(value => value.str.startsWith("Hors bordereau :")
+    ? { ...value, str: "Dépose de clôture existante" }
+    : value);
+  service.text = service.items.map(value => value.str).join(" ");
+
+  const rows = parse(lines);
+  const hb = byCode(rows, "HB");
+  assert.equal(hb.length, 3);
+  assert.equal(hb.at(-1).designation, "Dépose de clôture existante");
+  assert.equal(hb.at(-1).pu, 450);
+  assert.equal(hb.at(-1).quantity, 1);
+  assert.equal(hb.at(-1).total, 450);
+  assert.doesNotMatch(one(rows, "MOE02").raw, /Dépose de clôture/);
+});
+
 test("Comparaison du devis D26 RE060", () => {
   const { output, stats } = analyse();
   const status = (code) => byCode(output, code).map(row => row.status);
