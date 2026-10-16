@@ -1314,7 +1314,7 @@ const PDF = {
     return result;
   },
 
-    parseCgtiRows: (lines) => {
+      parseCgtiRows: (lines) => {
     const DEBUG = CONFIG.DEBUG_CGTI === true;
     const rows = [];
     const diagnostics = [];
@@ -1472,7 +1472,10 @@ const PDF = {
           : defaultLayout(page.width));
 
       if (detected) {
-        lastLayout = layout;
+        lastLayout = {
+          ...layout,
+          width: page.width
+        };
       }
 
       // On garde tout ce qui est sous l'en-tête.
@@ -1502,7 +1505,9 @@ const PDF = {
             if (!isOutside && !codeMatch) continue;
 
             codeAnchors.push({
-              code: isOutside ? "HB" : Utils.normalizeCode(codeMatch[1]),
+              code: isOutside
+                ? "HB"
+                : Utils.normalizeCode(codeMatch[0]).replace(/\./g, ""),
               codeLabel: label,
               y: fragments[0].y,
               x: Math.min(...fragments.map(item => item.x)),
@@ -1515,7 +1520,7 @@ const PDF = {
 
       codeAnchors.sort((a, b) => b.y - a.y);
 
-      const amountLines = groupItems(
+      const rawAmountLines = groupItems(
         tokens.filter(token =>
           inColumn(token, layout.columns.pu) ||
           inColumn(token, layout.columns.quantity) ||
@@ -1546,6 +1551,7 @@ const PDF = {
             quantity,
             total,
             outsideLabel,
+            lineText,
             offered: /^(?:OFFERT(?:E)?S?|GRATUIT(?:E)?S?)$/i.test(
               totalText.trim()
             )
@@ -1556,6 +1562,32 @@ const PDF = {
           line.offered ||
           line.outsideLabel
         );
+
+      // Fusionne les hors bordereau sur 2 lignes quand le libellé est coupé.
+      const amountLines = [];
+      for (const line of rawAmountLines) {
+        const previous = amountLines[amountLines.length - 1];
+
+        const isContinuation =
+          previous &&
+          previous.outsideLabel &&
+          !line.outsideLabel &&
+          Math.abs(previous.y - line.y) <= 18 &&
+          !Number.isFinite(line.pu) &&
+          !Number.isFinite(line.quantity) &&
+          !Number.isFinite(line.total) &&
+          /^(?:-|\*|–|—)/.test(line.lineText || "") === false;
+
+        if (isContinuation) {
+          previous.outsideLabel = `${previous.outsideLabel} ${line.lineText}`.trim();
+          previous.quantityText = previous.quantityText || line.quantityText;
+          previous.totalText = previous.totalText || line.totalText;
+          previous.offered = previous.offered || line.offered;
+          continue;
+        }
+
+        amountLines.push(line);
+      }
 
       const pairs = [];
 
@@ -1755,7 +1787,7 @@ const PDF = {
 
     return result;
   },
- 
+  
   parseGenericRows: () => {
     throw new Error(
       "Ce fournisseur ne dispose pas encore d'un analyseur PDF."
@@ -1813,7 +1845,7 @@ const Compare = {
         continue;
       }
 
-      if (row.code === "HB") {
+            if (row.code === "HB") {
         const hasNumbers = [row.quantity, row.pu, row.total]
           .every(Number.isFinite);
 
@@ -1830,18 +1862,24 @@ const Compare = {
               `= ${expected.toFixed(2)} ≠ PTHT ${row.total.toFixed(2)}`;
         }
 
+        const hbLabel = row.outsideLabel
+          ? row.outsideLabel
+              .replace(/\s+/g, " ")
+              .trim()
+          : (row.designation || "");
+
         output.push({
           ...row,
           status: "HB_A_VERIFIER",
           detail: "Hors bordereau à valider" +
-            (row.designation ? ` ; ${row.designation}` : "") +
+            (hbLabel ? ` ; ${hbLabel}` : "") +
             ` ; ${check}`
         });
 
         stats.hb++;
         continue;
       }
-
+	  
       const candidates = excelByCode.get(Utils.normalizeCode(row.code));
 
       if (!candidates?.length) {
@@ -1935,6 +1973,16 @@ const Compare = {
           <td>${Utils.escapeHtml(row.pdf)}</td>
           <td>${Utils.escapeHtml(row.quoteNumber)}</td>
           <td>${Utils.escapeHtml(row.code)}</td>
+          <td>${Utils.escapeHtml(
+            row.code === "HB"
+              ? [row.outsideLabel, row.designation]
+                  .map(value => String(value ?? "").replace(/\s+/g, " ").trim())
+                  .filter((value, index, values) =>
+                    value && values.indexOf(value) === index
+                  )
+                  .join(" — ")
+              : ""
+          )}</td>
           <td>${Utils.escapeHtml(row.unit)}</td>
           <td>${Number.isFinite(row.pu) ? row.pu.toFixed(2) : ""}</td>
           <td class="${cssClass}">${Utils.escapeHtml(row.status)}</td>
@@ -1951,6 +1999,7 @@ const Compare = {
           <thead>
             <tr>
               <th>PDF</th><th>Numéro devis</th><th>Code</th>
+              <th>Libellé hors bordereau</th>
               <th>Unité</th><th>PU</th><th>Statut</th>
               <th>Détail</th><th>Page</th><th>RowKey</th>
             </tr>
