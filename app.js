@@ -1219,6 +1219,83 @@ const PDF = {
       const text = String(line.text || "").trim();
       const items = line.items || [];
 
+      // Prestations sans code : conserver la ligne uniquement si
+      // la colonne code est vide et les cellules sont exploitables.
+      // Ne jamais inventer un code catalogue depuis la désignation.
+      const codeCellText = PDFHelpers.cell(items, layout.code).trim();
+
+      if (!codeCellText && items.length) {
+        // Lecture stricte dans la colonne unité, sans rechercher
+        // une lettre isolée dans la désignation.
+        const unitText = PDFHelpers.cell(items, layout.unit);
+        const unit = Utils.canonicalUnit(unitText);
+
+        const puText = PDFHelpers.cell(items, layout.pu);
+        const quantityText = PDFHelpers.cell(items, layout.quantity);
+        const totalText = PDFHelpers.cell(items, layout.total);
+
+        const pu = Utils.parsePdfNumber(puText);
+        const quantity = Utils.parsePdfNumber(quantityText);
+        const total = Utils.parsePdfNumber(totalText);
+
+        const designation = items
+          .filter(item => {
+            const x = PDFHelpers.centerX(item);
+            return x >= layout.code.right && x < layout.unit.left;
+          })
+          .sort((a, b) => a.x - b.x)
+          .map(item => item.str)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        const normalizedDesignation = Utils.normalizeKey(designation);
+
+        const isSummary =
+          /^(?:TOTAL|SOUS[\s-]*TOTAL|MONTANT|TVA|TTC|NET A PAYER|ACOMPTE|REMISE)\b/
+            .test(normalizedDesignation);
+
+        const hasUsableCells =
+          Boolean(designation) &&
+          Boolean(unit) &&
+          unit !== "%" &&
+          Number.isFinite(pu) &&
+          Number.isFinite(quantity);
+
+        if (hasUsableCells && !isSummary) {
+          rows.push({
+            // HB est un classement interne, pas un code lu dans le PDF.
+            code: "HB",
+            codeLabel: "Sans code dans le PDF",
+            sourceCode: "",
+            outsideCatalog: true,
+
+            // Utilisé par Compare.execute et le tableau existants.
+            outsideLabel: designation,
+            designation,
+
+            unit,
+            pu,
+            quantity,
+            total,
+            puText,
+            quantityText,
+            totalText,
+            priceKind: "amount",
+
+            page: line.page,
+            y: line.y,
+            rowKey: `${line.page}_${Math.round(line.y * 10)}`,
+            raw: text
+          });
+        }
+
+        // Une colonne code vide ne doit pas conduire à interpréter
+        // le premier mot de la désignation comme un code article.
+        continue;
+      }
+
+
       const pattern = supplier === "AXIANS"
         ? /^\s*(HB|MOE01|MOE02|[A-Z]{2,6}[\s_-]*\d{1,4}(?:BIS|TER|[A-Z])?)\b/i
         : /^\s*(MOE01|MOE02|HB|[A-Z0-9]{2,12})\b/i;
