@@ -446,8 +446,9 @@ app.use(async (req, res, next) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, () => {
   console.log(`API démarrée : http://${HOST}:${PORT}`);
+  console.log(`Interface : http://${HOST}:${PORT}/index.html`);
   console.log(`Contrôle API : http://${HOST}:${PORT}/api/health`);
   console.log(`Base globale : ${DB_FILE}`);
   console.log(`Catalogues : ${CATALOG_DIR}`);
