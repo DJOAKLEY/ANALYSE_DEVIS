@@ -8,6 +8,21 @@ const crypto = require("crypto");
 const HOST = "0.0.0.0";
 const PORT = process.env.PORT || 3000;
 
+const express = require("express");
+const app = express();
+
+// Servir les fichiers statiques (HTML, CSS, JS)
+app.use(express.static(path.join(__dirname, ".")));
+
+// Route pour index.html
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/index.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
 const DATA_DIR = path.join(__dirname, "DATA");
 const DB_FILE = path.join(DATA_DIR, "excelDB.json");
 const CATALOG_DIR = path.join(DATA_DIR, "CATALOG");
@@ -280,7 +295,7 @@ function writeGlobalDB(db) {
   atomicWriteJson(DB_FILE, db);
 }
 
-const server = http.createServer(async (req, res) => {
+app.use(async (req, res, next) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
@@ -291,7 +306,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    const url = new URL(req.url, `http://${HOST}:${PORT}`);
+    const url = new URL(req.url, `http://${req.hostname}`);
     const route = url.pathname;
 
     if (req.method === "GET" && route === "/api/health") {
