@@ -5,8 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const HOST = "127.0.0.1";
-const PORT = 3000;
+const HOST = "0.0.0.0";
+const PORT = process.env.PORT || 3000;
 
 const DATA_DIR = path.join(__dirname, "DATA");
 const DB_FILE = path.join(DATA_DIR, "excelDB.json");
