@@ -5,7 +5,7 @@
    ========================================================= */
 
 const CONFIG = {
-  API_BASE: "http://127.0.0.1:3000",
+  API_BASE: "https://analyse-devis.onrender.com",
   API_TIMEOUT: 30000,
   API_CHECK_INTERVAL: 10000,
   STORAGE_KEYS: {
