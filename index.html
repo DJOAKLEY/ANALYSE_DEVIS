@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analyse de devis</title>
+
+  <link rel="stylesheet" href="./styles.css" />
+
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="./orange-logo.png" alt="Orange" />
+      <div>
+        <h1>Analyse de devis</h1>
+        <div class="status" id="apiStatus">
+          <span>●</span>
+          <span id="apiStatusText">Vérification de l’API...</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="tab-bar">
+      <button class="nav-btn active" data-tab="importTab" type="button">Import Excel</button>
+      <button class="nav-btn" data-tab="analysisTab" type="button">Analyse des devis</button>
+      <button class="nav-btn" data-tab="suppliersTab" type="button">Fournisseurs</button>
+    </div>
+
+    <section id="importTab" class="tab-panel active">
+      <div class="card">
+        <h2>Import Excel</h2>
+
+        <p class="muted">
+          Déposez un ou plusieurs fichiers Excel, sélectionnez le fournisseur et la feuille, puis construisez la base JSON.
+        </p>
+
+        <div id="excelDropZone" class="drop-zone">
+          <div class="drop-zone-icon">📄</div>
+          <p class="drop-zone-text">
+            Déposez vos fichiers Excel ici ou cliquez pour les sélectionner
+          </p>
+          <input id="excelFiles" type="file" accept=".xlsx,.xls,.csv" multiple data-lock>
+        </div>
+
+        <div class="row" style="margin-top: 16px;">
+          <div class="field">
+            <label for="colCode">Colonne code</label>
+            <input id="colCode" type="text" value="Items" data-lock>
+          </div>
+
+          <div class="field">
+            <label for="colUnit">Colonne unité</label>
+            <input id="colUnit" type="text" value="Unité" data-lock>
+          </div>
+
+          <div class="field">
+            <label for="colPU">Colonne prix (AXIANS / NEWCOM)</label>
+            <input id="colPU" type="text" placeholder="Auto si vide" data-lock>
+          </div>
+        </div>
+
+        <!-- 
+		<div class="notice">
+          <strong>CGTI :</strong> la colonne prix est forcée sur
+          <strong>CGTI TARIF 2024 REUNION</strong>.
+          Les tarifs 2021 et Mayotte ne sont pas utilisés.
+        </div>
+		-->
+
+        <div id="sheetPickerCard" style="display: none;">
+          <h3>Fichiers importés</h3>
+          <div id="sheetPicker"></div>
+        </div>
+
+        <div class="actions">
+          <button id="buildDbBtn" type="button" data-lock>Construire et sauvegarder le catalogue</button>
+        </div>
+
+        <div id="buildProgress" class="progress-info" aria-live="polite"></div>
+      </div>
+
+      <div class="card">
+        <h2>Catalogues sauvegardés</h2>
+
+        <div class="row">
+          <div class="field">
+            <label for="catalogSupplierSelect">Fournisseur du catalogue</label>
+            <select id="catalogSupplierSelect" data-lock>
+              <option value="">-- choisir --</option>
+            </select>
+          </div>
+
+          <button id="loadDbBtn" type="button" class="secondary" data-lock>Charger le catalogue</button>
+          <button id="refreshCatalogFilesBtn" type="button" class="secondary" data-lock>Actualiser les fichiers</button>
+        </div>
+
+        <div class="notice" style="margin-top: 14px;">
+          Si vous avez choisi le mauvais onglet Excel, sélectionnez le fichier catalogue correspondant ici
+          puis supprimez-le avant de réimporter.
+        </div>
+
+        <div id="catalogFilesInfo" aria-live="polite" style="margin-top: 12px;">
+          Choisissez un fournisseur pour afficher ses catalogues.
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Base JSON</h2>
+        <div id="dbInfo">Chargement...</div>
+      </div>
+    </section>
+
+    <section id="analysisTab" class="tab-panel">
+      <div class="card">
+        <h2>Analyse des devis PDF</h2>
+
+        <div class="row">
+          <div class="field">
+            <label for="supplierSelect">Catalogue de référence</label>
+            <select id="supplierSelect" data-lock>
+              <option value="">-- choisir --</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="tol">Tolérance prix unitaire</label>
+            <input id="tol" type="number" value="0.01" min="0" step="0.001" data-lock>
+          </div>
+        </div>
+
+        <div id="pdfDropZone" class="drop-zone" style="margin-top: 16px;">
+          <div class="drop-zone-icon">📎</div>
+          <p class="drop-zone-text">
+            Déposez vos PDF ici ou cliquez pour les sélectionner
+          </p>
+          <input id="pdfFiles" type="file" accept=".pdf" multiple data-lock>
+        </div>
+
+        <div id="pdfFileList">Aucun PDF sélectionné.</div>
+
+        <div class="actions">
+          <button id="runBtn" type="button" data-lock>Analyser les devis</button>
+          <button id="exportCsvBtn" type="button" class="secondary" disabled>Exporter les résultats CSV</button>
+        </div>
+
+        <div id="summary" aria-live="polite"></div>
+      </div>
+
+      <div class="card">
+        <h2>Résultats</h2>
+        <div id="results">Aucune analyse effectuée.</div>
+      </div>
+    </section>
+
+    <section id="suppliersTab" class="tab-panel">
+      <div class="card">
+        <h2>Fournisseurs</h2>
+
+        <div id="supplierList">Chargement...</div>
+
+        <div class="row" style="margin-top: 16px;">
+          <div class="field">
+            <label for="newSupplierInput">Ajouter un fournisseur</label>
+            <input id="newSupplierInput" type="text" placeholder="Nom du fournisseur" data-lock>
+          </div>
+
+          <button id="addSupplierBtn" type="button" data-lock>Ajouter</button>
+          <button id="listSuppliersBtn" type="button" class="secondary" data-lock>Détecter les fournisseurs sur disque</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
