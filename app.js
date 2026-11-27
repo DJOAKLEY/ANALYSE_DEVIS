@@ -5,7 +5,7 @@
    ========================================================= */
 
 const CONFIG = {
-  API_BASE: "https://analyse-devis.onrender.com",
+  API_BASE: "https://api-devis-orange.onrender.com",
   API_TIMEOUT: 30000,
   API_CHECK_INTERVAL: 10000,
   STORAGE_KEYS: {
